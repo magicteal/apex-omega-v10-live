@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APEX-OMEGA V10 LIVE // Delta Exchange India Command Center</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #070A0D; color: #E2E8F0; font-family: Inter, system-ui, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body class="min-h-screen p-3 sm:p-5">
+  <div class="max-w-7xl mx-auto space-y-4">
+    <!-- HEADER -->
+    <div class="flex flex-wrap items-center justify-between gap-2 bg-[#0B0F12] border border-[#1C242D] p-3.5 rounded">
+      <div class="flex items-center gap-2.5">
+        <span class="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+        <h1 class="text-xs sm:text-sm font-bold tracking-wider uppercase text-slate-100">
+          APEX-OMEGA V10 LIVE // ZERO-LAG DELTA EXCHANGE INDIA HYPER-COMPOUNDER
+        </h1>
+        <span id="badge-status" class="text-[10px] px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 font-semibold">
+          LIVE 1.5S DELTA DAEMON SYNCED
+        </span>
+      </div>
+      <div class="text-[11px] text-slate-400 mono">
+        LAST TICK: <span id="last-tick" class="text-slate-200 font-semibold">--:--:--</span> |
+        MODE: <span id="exec-mode" class="text-emerald-400 font-bold">LIVE</span> |
+        SERVER IP: <span id="server-ip" class="text-amber-300">--</span>
+      </div>
+    </div>
+
+    <!-- TOP KPI CARDS -->
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 mono">
+      <div class="p-3 bg-[#0B0F12] border border-[#1C242D] rounded">
+        <div class="text-[10px] text-slate-400 uppercase">ACTIVE BALANCE (DELTA)</div>
+        <div id="kpi-balance" class="text-base sm:text-lg font-bold text-white mt-0.5">₹10,000.00</div>
+        <div id="kpi-open-pnl" class="text-[10px] text-emerald-400 mt-0.5">Open PnL: +₹0.00</div>
+      </div>
+      <div class="p-3 bg-[#0B0F12] border border-[#1C242D] rounded">
+        <div class="text-[10px] text-slate-400 uppercase">NET PROFIT / ROI</div>
+        <div id="kpi-profit" class="text-base sm:text-lg font-bold text-emerald-400 mt-0.5">+₹0.00</div>
+        <div id="kpi-roi" class="text-[10px] text-slate-400 mt-0.5">Return: +0.00%</div>
+      </div>
+      <div class="p-3 bg-[#0B0F12] border border-[#1C242D] rounded">
+        <div class="text-[10px] text-slate-400 uppercase">WIN RATE % (TARGET 75%+)</div>
+        <div id="kpi-winrate" class="text-base sm:text-lg font-bold text-cyan-300 mt-0.5">0.0%</div>
+        <div id="kpi-wl" class="text-[10px] text-slate-400 mt-0.5">0W / 0L (0 Closed)</div>
+      </div>
+      <div class="p-3 bg-[#0B0F12] border border-[#1C242D] rounded">
+        <div class="text-[10px] text-slate-400 uppercase">COMPOUNDING POWER (6.5X)</div>
+        <div id="kpi-power" class="text-base sm:text-lg font-bold text-amber-300 mt-0.5">₹65,000</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">100% Reinvested</div>
+      </div>
+      <div class="p-3 bg-[#0B0F12] border border-[#1C242D] rounded">
+        <div class="text-[10px] text-slate-400 uppercase">PROTECTED FLOOR (75%)</div>
+        <div id="kpi-floor" class="text-base sm:text-lg font-bold text-slate-200 mt-0.5">₹10,000</div>
+        <div id="kpi-peak" class="text-[10px] text-slate-400 mt-0.5">Peak: ₹10,000.00</div>
+      </div>
+      <div class="p-3 bg-[#0B0F12] border border-[#1C242D] rounded">
+        <div class="text-[10px] text-slate-400 uppercase">ACTIVE SLOTS (MAX 3)</div>
+        <div id="kpi-slots" class="text-base sm:text-lg font-bold text-emerald-300 mt-0.5">0/3 OPEN</div>
+        <div id="kpi-stage-note" class="text-[10px] text-slate-400 mt-0.5">5-Stage Ratchet Armed</div>
+      </div>
+    </div>
+
+    <!-- TABS BAR -->
+    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-[#1C242D] pb-2">
+      <div class="flex gap-2">
+        <button onclick="setTab('monitor')" id="tab-monitor" class="px-3 py-1.5 text-xs font-bold rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+          01 // LIVE MARKET & OPEN POSITION
+        </button>
+        <button onclick="setTab('trades')" id="tab-trades" class="px-3 py-1.5 text-xs font-bold rounded bg-[#0B0F12] text-slate-400 border border-[#1C242D]">
+          02 // TRADE ENTRY & EXIT LEDGER (<span id="tab-trades-count">0</span>)
+        </button>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="flattenAll()" class="px-3 py-1.5 text-xs font-bold rounded bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/40">
+          EMERGENCY CLOSE ALL OPEN TRADES
+        </button>
+      </div>
+    </div>
+
+    <!-- TAB 01: MONITOR -->
+    <div id="view-monitor" class="space-y-4">
+      <div class="bg-[#0B0F12] border border-[#1C242D] rounded p-3.5">
+        <div class="text-xs font-bold uppercase text-slate-300 mb-2">ACTIVE LIVE POSITIONS & 5-STAGE RATCHET STATUS</div>
+        <div id="open-positions-box" class="text-xs text-slate-400 mono">Scanning all 10 markets every 1.5s for 96+/100 ignition...</div>
+      </div>
+
+      <div class="bg-[#0B0F12] border border-[#1C242D] rounded overflow-x-auto">
+        <div class="p-3 border-b border-[#1C242D] flex justify-between items-center">
+          <span class="text-xs font-bold uppercase text-slate-300">10-MARKET REAL-TIME 5M QUANT SCANNER</span>
+          <span id="delta-err-box" class="text-[11px] text-amber-400 mono"></span>
+        </div>
+        <table class="w-full text-left text-xs mono">
+          <thead class="bg-[#11161B] text-slate-400 uppercase text-[10px]">
+            <tr>
+              <th class="p-2.5">Pair</th>
+              <th class="p-2.5">Live Price</th>
+              <th class="p-2.5">VWAP Z-Score</th>
+              <th class="p-2.5">RSI(2) / RSI(14)</th>
+              <th class="p-2.5">KER / RVOL</th>
+              <th class="p-2.5">Quant Score</th>
+              <th class="p-2.5">Setup Regime</th>
+            </tr>
+          </thead>
+          <tbody id="scanner-tbody" class="divide-y divide-[#1C242D]"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TAB 02: LEDGER -->
+    <div id="view-trades" class="hidden bg-[#0B0F12] border border-[#1C242D] rounded overflow-x-auto">
+      <div class="p-3 border-b border-[#1C242D] flex justify-between items-center">
+        <span class="text-xs font-bold uppercase text-slate-300">02 // COMPLETE TRADE ENTRY & EXIT LEDGER</span>
+        <span id="ledger-summary" class="text-xs mono text-slate-400"></span>
+      </div>
+      <table class="w-full text-left text-xs mono">
+        <thead class="bg-[#11161B] text-slate-400 uppercase text-[10px]">
+          <tr>
+            <th class="p-2.5">Trade ID</th>
+            <th class="p-2.5">Pair & Side</th>
+            <th class="p-2.5">Entry Price</th>
+            <th class="p-2.5">Exit Price</th>
+            <th class="p-2.5">Max Stage Reached</th>
+            <th class="p-2.5">Exit Reason</th>
+            <th class="p-2.5">Net PnL (₹ / %)</th>
+            <th class="p-2.5">Balance After</th>
+          </tr>
+        </thead>
+        <tbody id="ledger-tbody" class="divide-y divide-[#1C242D]"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    function setTab(t) {
+      document.getElementById('view-monitor').classList.toggle('hidden', t !== 'monitor');
+      document.getElementById('view-trades').classList.toggle('hidden', t !== 'trades');
+    }
+    async function flattenAll() {
+      if (!confirm('Close all open positions at market right now?')) return;
+      await fetch('/api/kill-switch', { method: 'POST' });
+      pollState();
+    }
+    async function pollState() {
+      try {
+        const res = await fetch('/api/state', { cache: 'no-store' });
+        if (!res.ok) return;
+        const d = await res.json();
+        document.getElementById('last-tick').textContent = new Date().toLocaleTimeString();
+        document.getElementById('exec-mode').textContent = d.mode || 'LIVE';
+        document.getElementById('server-ip').textContent = d.server_outbound_ip || '--';
+        const eq = Number(d.active_equity || 10000);
+        const upnl = Number(d.unrealized_pnl_inr || 0);
+        const startEq = Number(d.starting_equity || 10000);
+        const netP = eq - startEq;
+        const roi = ((netP / Math.max(startEq, 1)) * 100).toFixed(2);
+        document.getElementById('kpi-balance').textContent = '₹' + eq.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        document.getElementById('kpi-open-pnl').textContent = `Open PnL: ${upnl >= 0 ? '+' : ''}₹${upnl.toFixed(2)}`;
+        document.getElementById('kpi-open-pnl').className = `text-[10px] mt-0.5 ${upnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+        document.getElementById('kpi-profit').textContent = `${netP >= 0 ? '+' : ''}₹${netP.toFixed(2)}`;
+        document.getElementById('kpi-profit').className = `text-base sm:text-lg font-bold mt-0.5 ${netP >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+        document.getElementById('kpi-roi').textContent = `Return: ${netP >= 0 ? '+' : ''}${roi}%`;
+        document.getElementById('kpi-winrate').textContent = `${Number(d.win_rate_pct || 0).toFixed(1)}%`;
+        document.getElementById('kpi-wl').textContent = `${d.wins || 0}W / ${d.losses || 0}L (${d.total_closed_trades || 0} Closed)`;
+        document.getElementById('kpi-power').textContent = '₹' + Math.round(eq * 6.5).toLocaleString('en-IN');
+        document.getElementById('kpi-floor').textContent = '₹' + Math.round(d.kelly?.protected_floor || startEq).toLocaleString('en-IN');
+        document.getElementById('kpi-peak').textContent = 'Peak: ₹' + Number(d.kelly?.peak_equity || eq).toLocaleString('en-IN', { minimumFractionDigits: 2 });
+        const camps = d.active_campaigns || [];
+        document.getElementById('kpi-slots').textContent = `${camps.length}/3 OPEN`;
+        document.getElementById('tab-trades-count').textContent = (d.trade_history || []).length;
+        document.getElementById('delta-err-box').textContent = d.delta_api_error ? `Delta API Note: ${d.delta_api_error}` : '';
+
+        // Open Positions Box
+        const posBox = document.getElementById('open-positions-box');
+        if (camps.length === 0) {
+          posBox.innerHTML = '<div class="text-slate-400">0/3 Open Positions — Actively scanning all 10 pairs every 1.5 seconds...</div>';
+        } else {
+          posBox.innerHTML = camps.map(c => {
+            const p = Number(c.total_unrealized_pnl_inr || 0) + Number(c.tp1_banked_pnl_inr || 0);
+            return `<div class="p-3 bg-[#11161B] border border-emerald-500/40 rounded flex flex-wrap justify-between items-center gap-3 mb-2">
+              <div>
+                <span class="px-2 py-0.5 text-[10px] font-bold rounded ${c.side === 'LONG' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}">${c.side}</span>
+                <span class="font-bold text-white ml-1.5">${c.symbol}</span>
+                <span class="text-slate-400 ml-2">Stage: <b class="text-amber-300">${c.max_stage_reached} (Stage ${c.ratchet_stage || 0})</b></span>
+              </div>
+              <div class="flex flex-wrap gap-4 text-xs">
+                <span>Entry: <b class="text-white">$${c.base_entry_price}</b></span>
+                <span>Live: <b class="text-cyan-300">$${c.current_price}</b></span>
+                <span>Peak: <b class="text-slate-300">$${c.highest_extreme}</b></span>
+                <span>Locked Stop: <b class="text-amber-300">$${c.effective_stop}</b></span>
+                <span>Notional: <b class="text-slate-200">₹${Number(c.total_notional_inr || 0).toLocaleString('en-IN')}</b></span>
+                <span>Live PnL: <b class="${p >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${p >= 0 ? '+' : ''}₹${p.toFixed(2)}</b></span>
+              </div>
+            </div>`;
+          }).join('');
+        }
+
+        // Scanner Table
+        const scanRows = (d.scanner || []).map(s => `
+          <tr class="hover:bg-[#11161B]/60">
+            <td class="p-2.5 font-bold text-white">${s.symbol}</td>
+            <td class="p-2.5 text-slate-200">$${s.price}</td>
+            <td class="p-2.5 ${s.z_score <= -1 ? 'text-emerald-400' : s.z_score >= 1 ? 'text-rose-400' : 'text-slate-300'}">${s.z_score > 0 ? '+' : ''}${s.z_score}σ</td>
+            <td class="p-2.5 text-slate-300">${s.rsi_2} / ${s.rsi_14}</td>
+            <td class="p-2.5 text-slate-300">${s.ker} / ${s.rvol}x</td>
+            <td class="p-2.5 font-bold ${s.confluence_score >= 96 ? 'text-emerald-400' : 'text-amber-300'}">${s.confluence_score}/100</td>
+            <td class="p-2.5"><span class="px-2 py-0.5 text-[10px] rounded bg-slate-800 text-slate-200">${s.regime} (${s.setup_type})</span></td>
+          </tr>
+        `).join('');
+        document.getElementById('scanner-tbody').innerHTML = scanRows;
+
+        // Ledger Table
+        const hist = d.trade_history || [];
+        document.getElementById('ledger-summary').textContent = `Gross Profit: +₹${Number(d.gross_profit_inr||0).toFixed(2)} | Gross Loss: -₹${Number(d.gross_loss_inr||0).toFixed(2)} | Net Realized: ₹${Number(d.net_realized_pnl_inr||0).toFixed(2)}`;
+        document.getElementById('ledger-tbody').innerHTML = hist.length === 0
+          ? '<tr><td colspan="8" class="p-4 text-center text-slate-500">No closed trades yet.</td></tr>'
+          : hist.map(t => `
+            <tr class="hover:bg-[#11161B]/60">
+              <td class="p-2.5 text-slate-400">${t.trade_id}</td>
+              <td class="p-2.5 font-bold text-white">${t.symbol} <span class="text-[10px] ${t.side === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}">${t.side}</span></td>
+              <td class="p-2.5">$${t.entry_price}</td>
+              <td class="p-2.5">$${t.exit_price}</td>
+              <td class="p-2.5 text-amber-300">${t.max_stage_reached}</td>
+              <td class="p-2.5 text-slate-300">${t.exit_reason}</td>
+              <td class="p-2.5 font-bold ${t.realized_pnl_inr >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${t.realized_pnl_inr >= 0 ? '+' : ''}₹${Number(t.realized_pnl_inr).toFixed(2)} (${t.roi_pct}%)</td>
+              <td class="p-2.5 text-white">₹${Number(t.balance_after_inr).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+            </tr>
+          `).join('');
+      } catch (e) {}
+    }
+    pollState();
+    setInterval(pollState, 1500);
+  </script>
+</body>
+</html>
