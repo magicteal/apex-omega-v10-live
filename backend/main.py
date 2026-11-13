@@ -737,6 +737,7 @@ async def start_background_scanner() -> None:
 
 
 @app.get("/", response_class=HTMLResponse)
+@app.head("/")
 async def serve_visual_dashboard() -> HTMLResponse:
     """Always serves the interactive V10 Live Command Center UI at GET / so visiting the Render URL never dumps raw JSON!"""
     if DASHBOARD_HTML_PATH.exists():
@@ -745,7 +746,11 @@ async def serve_visual_dashboard() -> HTMLResponse:
 
 
 @app.get("/health")
+@app.head("/health")
+@app.get("/ping")
+@app.head("/ping")
 @app.get("/api/ping")
+@app.head("/api/ping")
 async def health_check() -> Dict[str, Any]:
     return {
         "status": "ONLINE_24_7",
