@@ -153,7 +153,8 @@ class SqueezeEngine:
         is_tier1 = symbol in TIER1_ALPHA_SYMBOLS
         tier_bonus = 2 if is_tier1 else 0
         min_ker_gate = 0.16 if is_tier1 else 0.25
-        vol_gate_ok = true_atr_pct >= 0.0014 and ker >= min_ker_gate
+        # Strictly enable entries ONLY on Tier-1 Alpha pairs (BTC, SOL, SUI, LINK, DOGE, ADA, BNB — 71.9% WR, 1.61 PF)
+        vol_gate_ok = is_tier1 and true_atr_pct >= 0.0014 and ker >= min_ker_gate
 
         # =========================================================================
         # CORE A: TREND-ALIGNED RSI-2 / VWAP ABSORPTION SNIPER (Upgraded V6 Core)

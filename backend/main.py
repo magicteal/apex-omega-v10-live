@@ -272,10 +272,10 @@ class AutonomousDaemonV10:
                         "tp1_hit": False,
                         "tp1_banked_pnl_inr": 0.0,
                         "ratchet_stage": 0,
-                        "chandelier_stop": fmt_price(ep * (1.0 - dir_m * 0.0024)),
+                        "chandelier_stop": fmt_price(ep * (1.0 - dir_m * 0.0028)),
                         "breakeven_locked": False,
                         "breakeven_stop": None,
-                        "effective_stop": fmt_price(ep * (1.0 - dir_m * 0.0024)),
+                        "effective_stop": fmt_price(ep * (1.0 - dir_m * 0.0028)),
                         "filled_units": 1,
                         "max_stage_reached": "V10_SNIPER_OPEN",
                         "total_notional_inr": notional_inr,
@@ -435,7 +435,7 @@ class AutonomousDaemonV10:
                 is_tier1 = camp["symbol"] in TIER1_ALPHA_SYMBOLS
                 # Exact V9 Final Capped Stop Geometry: -0.22% price stop (~-1.4% before fees = ~-₹180 total on 6.5x, matching V9's tight capped stop!)
                 # Or 0.25% on Tier-2 so no single stop can EVER lose ₹366-₹450!
-                stop_dist = 0.0024 if is_tier1 else 0.0026
+                stop_dist = 0.0028
                 res = await self.live_router.open_live_trade(
                     scanner_symbol=camp["symbol"],
                     side=camp["side"],
@@ -479,7 +479,7 @@ class AutonomousDaemonV10:
         entry_price = float(sig["price"])
         is_tier1 = sig["symbol"] in TIER1_ALPHA_SYMBOLS
 
-        stop_dist = 0.0024 if is_tier1 else 0.0026
+        stop_dist = 0.0028
         stage2_trig = fmt_price(entry_price * (1.0 + direction * 0.0068))
         stage4_tp = fmt_price(entry_price * (1.0 + direction * 0.0160))
         initial_stop = fmt_price(entry_price * (1.0 - direction * stop_dist))
@@ -547,41 +547,41 @@ class AutonomousDaemonV10:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # Stage 0.5 Zero-Loss Shield (+0.25% move): Locks Stop at Entry + 0.15% (Net GREEN win after 0.118% Delta Fee+GST!)
-        if max_fav_pct >= 0.0025 and camp.get("ratchet_stage", 0) < 0.5:
+        # Stage 0.5 Zero-Loss Shield (+0.18% move): Locks Stop at Entry + 0.10% (Net GREEN win after 0.0472% Maker Fee+GST!)
+        if max_fav_pct >= 0.0018 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0015))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0010))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "ZERO_LOSS_SHIELD_LOCKED"
 
-        # Stage 1 (+0.42% move, ~+₹275 open profit): Locks Stop at Entry + 0.30% (Net +₹120+ win after Delta Fee+GST!)
-        if max_fav_pct >= 0.0042 and camp.get("ratchet_stage", 0) < 1:
+        # Stage 1 (+0.38% move): Locks Stop at Entry + 0.28% (+₹150+ net win after Maker Fee+GST!)
+        if max_fav_pct >= 0.0038 and camp.get("ratchet_stage", 0) < 1:
             camp["ratchet_stage"] = 1
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0030))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0028))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_1_PROFIT_LOCKED"
 
-        # Stage 2 (+0.68% move): Banks 50% in cash & locks 50% Runner Stop at Entry + 0.46%
-        if max_fav_pct >= 0.0068 and camp.get("ratchet_stage", 0) < 2:
+        # Stage 2 (+0.65% move): Banks 50% via Maker Limit & locks 50% Runner Stop at Entry + 0.50%
+        if max_fav_pct >= 0.0065 and camp.get("ratchet_stage", 0) < 2:
             camp["ratchet_stage"] = 2
             camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0046))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0050))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_2_50PCT_BANKED"
             half_notional = notional * 0.50
-            fees_half = half_notional * self.FEE_RATE * 2.0
-            camp["tp1_banked_pnl_inr"] = round(half_notional * 0.0068 - fees_half, 2)
+            fees_half = half_notional * 0.000236 * 2.0
+            camp["tp1_banked_pnl_inr"] = round(half_notional * 0.0065 - fees_half, 2)
 
-        # Stage 3 (+1.05% move): Locks Stop at Entry + 0.82% & trails 0.22% behind peak
-        if max_fav_pct >= 0.0105:
+        # Stage 3 (+1.00% move): Locks Stop at Entry + 0.85% & trails 0.20% behind peak
+        if max_fav_pct >= 0.0100:
             camp["ratchet_stage"] = 3
             camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0022))
-            floor_s = fmt_price(entry_p * (1.0 + direction * 0.0082))
+            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0020))
+            floor_s = fmt_price(entry_p * (1.0 + direction * 0.0085))
             camp["breakeven_stop"] = max(trail_s, floor_s) if side == "LONG" else min(trail_s, floor_s)
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_3_SUPER_TRAIL"
