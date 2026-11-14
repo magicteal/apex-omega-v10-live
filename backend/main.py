@@ -199,6 +199,18 @@ class AutonomousDaemonV10:
                     self.state["active_equity"] = real_bal
                     if real_bal > float(self.state.get("peak_equity", 0.0)):
                         self.state["peak_equity"] = real_bal
+                    # Auto-heal any legacy paper-clamped ledger row so Net Realized PnL == Active Balance - Starting Equity
+                    hist = self.state.get("trade_history", [])
+                    if len(hist) == 1:
+                        start_eq = float(self.state.get("starting_equity", 10000.0))
+                        true_diff = round(real_bal - start_eq, 2)
+                        if abs(float(hist[0].get("realized_pnl_inr", 0.0)) - true_diff) > 1.0:
+                            hist[0]["realized_pnl_inr"] = true_diff
+                            hist[0]["roi_pct"] = round((true_diff / max(start_eq, 1.0)) * 100.0, 2)
+                            hist[0]["balance_after_inr"] = round(real_bal, 2)
+                            hist[0]["outcome"] = "WIN" if true_diff > 0 else "LOSS"
+                            self._reconcile_trade_aggregates()
+                            self.save_state()
 
             open_syms = {c["symbol"] for c in self.active_campaigns}
             for scan_sym, p_info in list(self.live_router.live_positions_cache.items()):
@@ -212,6 +224,7 @@ class AutonomousDaemonV10:
                         notional_inr = round(float(self.state["active_equity"]) * 6.5, 2)
                     adopted = {
                         "trade_id": f"TRD-{int(time.time() * 1000) % 1000000000}",
+                        "entry_balance_inr": round(float(self.state["active_equity"]), 2),
                         "symbol": scan_sym,
                         "delta_symbol": p_info["delta_symbol"],
                         "live_qty": float(p_info["contracts"]),
@@ -272,14 +285,10 @@ class AutonomousDaemonV10:
                     st = camp.get("ratchet_stage", 0)
                     r_lbl = f"STAGE_{int(st)}_DELTA_RATCHET_WIN" if st >= 1 else ("STAGE_0.5_ZERO_LOSS_SHIELD_WIN" if st == 0.5 else "DELTA_EXCHANGE_STOP_OR_MANUAL_CLOSE")
                     self.close_campaign(camp, exit_price=exit_p, reason=r_lbl)
+                    await asyncio.sleep(0.35)
                     real_bal = await self.live_router.fetch_inr_balance()
                     if real_bal is not None and real_bal > 0:
-                        self.state["active_equity"] = real_bal
-                        if real_bal > float(self.state.get("peak_equity", 0.0)):
-                            self.state["peak_equity"] = real_bal
-                        if self.state.get("trade_history"):
-                            self.state["trade_history"][0]["balance_after_inr"] = real_bal
-                        self.save_state()
+                        self._reconcile_latest_trade_with_delta_wallet(camp, real_bal)
                     continue
 
             tick_price = float(live_pos["mark_price"]) if (live_pos and live_pos.get("mark_price")) else (live_item["price"] if live_item else camp["current_price"])
@@ -298,20 +307,18 @@ class AutonomousDaemonV10:
             if self.live_router.is_live() and camp.get("delta_symbol"):
                 if camp not in self.active_campaigns:
                     # Direct market close on Delta when V10 ratchet stop, 25m scratch, or Stage 4 target hits!
-                    await self.live_router.close_live_trade(
+                    fill_exit_p = await self.live_router.close_live_trade(
                         camp["delta_symbol"],
                         camp["side"],
                         float(camp.get("remaining_qty") or camp.get("live_qty") or 0.0),
                         camp.get("stop_order_id"),
                     )
+                    if fill_exit_p and self.state.get("trade_history"):
+                        self.state["trade_history"][0]["exit_price"] = fmt_price(fill_exit_p)
+                    await asyncio.sleep(0.35)
                     real_bal = await self.live_router.fetch_inr_balance()
                     if real_bal is not None and real_bal > 0:
-                        self.state["active_equity"] = real_bal
-                        if real_bal > float(self.state.get("peak_equity", 0.0)):
-                            self.state["peak_equity"] = real_bal
-                        if self.state.get("trade_history"):
-                            self.state["trade_history"][0]["balance_after_inr"] = real_bal
-                        self.save_state()
+                        self._reconcile_latest_trade_with_delta_wallet(camp, real_bal)
                 else:
                     new_stage = camp.get("ratchet_stage", 0)
                     new_stop = camp.get("effective_stop")
@@ -442,6 +449,7 @@ class AutonomousDaemonV10:
         trade_id = f"TRD-{int(time.time() * 1000) % 1000000000}"
         new_camp = {
             "trade_id": trade_id,
+            "entry_balance_inr": round(active_eq, 2),
             "symbol": sig["symbol"],
             "side": side,
             "setup_type": sig["setup_type"],
@@ -565,6 +573,45 @@ class AutonomousDaemonV10:
             camp["total_unrealized_pnl_inr"] = pnl
         self.save_state()
 
+    def _reconcile_trade_aggregates(self) -> None:
+        hist = self.state.get("trade_history", [])
+        wins = sum(1 for t in hist if float(t.get("realized_pnl_inr", 0.0)) > 0)
+        losses = sum(1 for t in hist if float(t.get("realized_pnl_inr", 0.0)) <= 0)
+        total = len(hist)
+        gp = round(sum(float(t.get("realized_pnl_inr", 0.0)) for t in hist if float(t.get("realized_pnl_inr", 0.0)) > 0), 2)
+        gl = round(sum(abs(float(t.get("realized_pnl_inr", 0.0))) for t in hist if float(t.get("realized_pnl_inr", 0.0)) <= 0), 2)
+        self.state["wins"] = wins
+        self.state["losses"] = losses
+        self.state["total_closed_trades"] = total
+        self.state["win_rate_pct"] = round((wins / max(total, 1)) * 100.0, 1) if total > 0 else 0.0
+        self.state["gross_profit_inr"] = gp
+        self.state["gross_loss_inr"] = gl
+        self.state["net_realized_pnl_inr"] = round(gp - gl, 2)
+
+    def _reconcile_latest_trade_with_delta_wallet(self, camp: Dict[str, Any], real_bal: float) -> None:
+        """Ensures Tab 02 Ledger PnL, Gross Profit/Loss, Net Realized, and Top KPIs match actual Delta Wallet 100% to the paisa (including Delta fees + 18% GST)."""
+        self.state["active_equity"] = round(real_bal, 2)
+        if real_bal > float(self.state.get("peak_equity", 0.0)):
+            self.state["peak_equity"] = round(real_bal, 2)
+        hist = self.state.get("trade_history", [])
+        if hist:
+            latest = hist[0]
+            if len(hist) > 1 and float(hist[1].get("balance_after_inr", 0.0)) > 0:
+                entry_bal = float(hist[1]["balance_after_inr"])
+            else:
+                entry_bal = float(camp.get("entry_balance_inr") or self.state.get("starting_equity") or 10000.0)
+            exact_pnl = round(real_bal - entry_bal, 2)
+            exact_roi = round((exact_pnl / max(entry_bal, 1.0)) * 100.0, 2)
+            latest["realized_pnl_inr"] = exact_pnl
+            latest["roi_pct"] = exact_roi
+            latest["balance_after_inr"] = round(real_bal, 2)
+            latest["outcome"] = "WIN" if exact_pnl > 0 else "LOSS"
+            # Keep starting_equity anchored so active_equity - starting_equity == net_realized_pnl_inr
+            self._reconcile_trade_aggregates()
+            if not self.active_campaigns:
+                self.state["starting_equity"] = round(real_bal - float(self.state["net_realized_pnl_inr"]), 2)
+        self.save_state()
+
     def close_campaign(self, camp: Dict[str, Any], exit_price: float, reason: str = "TIGHT_1.20PCT_CAPPED_STOP") -> Optional[Dict[str, Any]]:
         if camp not in self.active_campaigns:
             return None
@@ -573,29 +620,40 @@ class AutonomousDaemonV10:
         entry_p = float(camp["base_entry_price"])
         notional = float(camp["total_notional_inr"])
         pct_move = direction * ((exit_price - entry_p) / max(entry_p, 1e-12))
-        prev_eq = float(self.state["active_equity"])
-        total_fees = notional * self.FEE_RATE * 2.0
+        prev_eq = float(camp.get("entry_balance_inr") or self.state["active_equity"])
+        # Delta Exchange India taker fee (0.05%) + 18% GST = 0.059% per leg (~0.118% round-trip)
+        fee_rate_eff = 0.00059 if self.live_router.is_live() else self.FEE_RATE
+        total_fees = notional * fee_rate_eff * 2.0
         raw_pnl = notional * pct_move - total_fees
 
         st = camp.get("ratchet_stage", 0)
-        if reason == "STAGE_4_HOME_RUN_JACKPOT_WIN":
-            realized_pnl = round(max(prev_eq * 0.086, raw_pnl), 2)
-        elif st >= 3:
-            realized_pnl = round(max(prev_eq * 0.0565, raw_pnl), 2)
-        elif st == 2:
-            runner_notional = notional * 0.50
-            runner_pnl = runner_notional * pct_move - (runner_notional * self.FEE_RATE * 2.0)
-            combined = float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl
-            realized_pnl = round(max(prev_eq * 0.0345, combined, raw_pnl), 2)
-        elif st == 1:
-            realized_pnl = round(max(prev_eq * 0.0150, raw_pnl), 2)
-        elif st == 0.5:
-            realized_pnl = round(max(prev_eq * 0.0042, raw_pnl), 2)
-        elif reason == "TIME_DECAY_SCRATCH_WIN":
-            realized_pnl = round(max(prev_eq * 0.0080, raw_pnl), 2)
+        if self.live_router.is_live():
+            # In LIVE mode, never clamp to artificial paper caps — record true price + fee/GST PnL (then reconciled to exact Delta wallet balance)
+            if st == 2:
+                runner_notional = notional * 0.50
+                runner_pnl = runner_notional * pct_move - (runner_notional * fee_rate_eff * 2.0)
+                realized_pnl = round(float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl, 2)
+            else:
+                realized_pnl = round(raw_pnl, 2)
         else:
-            max_loss = -round(prev_eq * 0.0120, 2)
-            realized_pnl = round(max(raw_pnl, max_loss), 2)
+            if reason == "STAGE_4_HOME_RUN_JACKPOT_WIN":
+                realized_pnl = round(max(prev_eq * 0.086, raw_pnl), 2)
+            elif st >= 3:
+                realized_pnl = round(max(prev_eq * 0.0565, raw_pnl), 2)
+            elif st == 2:
+                runner_notional = notional * 0.50
+                runner_pnl = runner_notional * pct_move - (runner_notional * self.FEE_RATE * 2.0)
+                combined = float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl
+                realized_pnl = round(max(prev_eq * 0.0345, combined, raw_pnl), 2)
+            elif st == 1:
+                realized_pnl = round(max(prev_eq * 0.0150, raw_pnl), 2)
+            elif st == 0.5:
+                realized_pnl = round(max(prev_eq * 0.0042, raw_pnl), 2)
+            elif reason == "TIME_DECAY_SCRATCH_WIN":
+                realized_pnl = round(max(prev_eq * 0.0080, raw_pnl), 2)
+            else:
+                max_loss = -round(prev_eq * 0.0120, 2)
+                realized_pnl = round(max(raw_pnl, max_loss), 2)
 
         new_eq = round(prev_eq + realized_pnl, 2)
         roi_pct = round((realized_pnl / max(prev_eq, 1.0)) * 100.0, 2)
@@ -779,14 +837,21 @@ async def emergency_flatten() -> Dict[str, Any]:
         return {"status": "IDLE", "telemetry": daemon.build_payload()}
     closed_list = []
     for camp in list(daemon.active_campaigns):
+        fill_p = None
         if daemon.live_router.is_live() and camp.get("delta_symbol"):
-            await daemon.live_router.close_live_trade(
+            fill_p = await daemon.live_router.close_live_trade(
                 camp["delta_symbol"],
                 camp["side"],
                 float(camp.get("remaining_qty") or camp.get("live_qty") or 0.0),
                 camp.get("stop_order_id"),
             )
-        closed_list.append(daemon.close_campaign(camp, exit_price=camp["current_price"], reason="MANUAL_EMERGENCY_CLOSE"))
+        rec = daemon.close_campaign(camp, exit_price=fill_p or camp["current_price"], reason="MANUAL_EMERGENCY_CLOSE")
+        if daemon.live_router.is_live():
+            await asyncio.sleep(0.35)
+            real_bal = await daemon.live_router.fetch_inr_balance()
+            if real_bal is not None and real_bal > 0:
+                daemon._reconcile_latest_trade_with_delta_wallet(camp, real_bal)
+        closed_list.append(rec)
     return {"status": "FLATTENED", "closed_trades": closed_list, "telemetry": daemon.build_payload()}
 
 

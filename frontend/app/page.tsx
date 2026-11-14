@@ -557,9 +557,7 @@ export default function App() {
       } else if (reason === "TIME_DECAY_SCRATCH_WIN") {
         realizedPnl = +Math.max(prevEqVal * 0.0080, rawPnl).toFixed(2);
       } else {
-        // Strict Capped Stop at -1.20% of active equity (~-₹120 on ₹10k) so even a Stage-1 win (+1.50%) > 1 full loss!
-        const maxAllowedLoss = -+(prevEqVal * 0.0120).toFixed(2);
-        realizedPnl = +Math.max(rawPnl, maxAllowedLoss).toFixed(2);
+        realizedPnl = +rawPnl.toFixed(2);
       }
 
       const newEq = +(prevEqVal + realizedPnl).toFixed(2);
