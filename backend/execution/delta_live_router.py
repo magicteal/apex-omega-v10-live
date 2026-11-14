@@ -1,12 +1,11 @@
 """
 APEX-OMEGA V10.0 LIVE — Zero-Lag Delta Exchange India Execution & Telemetry Engine
-1. Concurrent 1.5s sync of Real Delta Wallet Balance, Open Positions (Mark Price & Live Open PnL), and Fills.
-2. Dual Hardware + Direct Market Ratchet Enforcement:
-   - Places exchange-side stop orders AND fires an immediate reduceOnly MARKET close the exact tick price touches
-     Stage 0.5 (+0.08%), Stage 1 (+0.24%), Stage 2 (+0.46%), Stage 3 (+0.82% trail), Stage 4 (+1.60%),
-     25m Time-Decay Scratch (+0.14%), or Initial Stop (-0.40%) so a winning trade like SOLUSD (+₹300) can NEVER fail to close!
+1. Concurrent 1.5s sync of Real Delta Wallet Balance, Open Positions (Last Price, Mark Price & Live Open PnL), and Fills.
+2. Exact Lot-Sizing Guard: Never rounds fractional contracts UP if doing so inflates leverage/notional on AVAX/ETH/SUI.
+3. Exact V9 Final Ratchet + Capped Stop Enforcement on Delta Exchange India.
 """
 import asyncio
+import math
 import os
 import time
 from typing import Dict, Any, List, Optional
@@ -139,7 +138,7 @@ class DeltaIndiaLiveRouter:
         side: str,
         notional_inr: float,
         entry_price: float,
-        stop_price: float,
+        stop_dist_pct: float,
     ) -> Optional[Dict[str, Any]]:
         if not await self.ensure_ready():
             return None
@@ -151,7 +150,14 @@ class DeltaIndiaLiveRouter:
             contract_size = float(market.get("contractSize") or 1.0)
             notional_usd = notional_inr / max(self.usd_inr_rate, 1.0)
             raw_qty = notional_usd / max(entry_price * contract_size, 1e-9)
-            qty = float(self.exchange.amount_to_precision(delta_sym, raw_qty))
+
+            # Prevent CCXT round-up from inflating position size on integer-contract pairs (e.g. AVAX/ETH/SUI)
+            prec_qty = float(self.exchange.amount_to_precision(delta_sym, raw_qty))
+            if prec_qty > raw_qty * 1.05 and raw_qty >= 1.0:
+                floored = math.floor(raw_qty)
+                qty = float(self.exchange.amount_to_precision(delta_sym, max(floored, 1)))
+            else:
+                qty = prec_qty
             if qty <= 0:
                 return None
 
@@ -163,9 +169,14 @@ class DeltaIndiaLiveRouter:
 
             order_side = "buy" if side == "LONG" else "sell"
             stop_side = "sell" if side == "LONG" else "buy"
+            direction = 1.0 if side == "LONG" else -1.0
 
             entry_order = await self.exchange.create_order(delta_sym, "market", order_side, qty)
             fill_p = float(entry_order.get("average") or entry_order.get("price") or entry_price)
+            actual_notional_inr = round(qty * contract_size * fill_p * self.usd_inr_rate, 2)
+
+            # Anchor initial stop_price to actual Delta fill price (not pre-order Binance spot price!)
+            exact_stop_price = fill_p * (1.0 - direction * stop_dist_pct)
 
             stop_id = None
             try:
@@ -175,7 +186,7 @@ class DeltaIndiaLiveRouter:
                     stop_side,
                     qty,
                     None,
-                    {"stopPrice": float(self.exchange.price_to_precision(delta_sym, stop_price)), "reduceOnly": True},
+                    {"stopPrice": float(self.exchange.price_to_precision(delta_sym, exact_stop_price)), "reduceOnly": True},
                 )
                 stop_id = stop_order.get("id")
             except Exception:
@@ -187,6 +198,8 @@ class DeltaIndiaLiveRouter:
                 "qty": qty,
                 "remaining_qty": qty,
                 "fill_price": fill_p,
+                "actual_notional_inr": actual_notional_inr,
+                "exact_stop_price": exact_stop_price,
                 "entry_order_id": entry_order.get("id"),
                 "stop_order_id": stop_id,
             }
@@ -267,7 +280,6 @@ class DeltaIndiaLiveRouter:
                     await self.exchange.cancel_order(stop_order_id, delta_symbol)
                 except Exception:
                     pass
-            # Also check actual live position size on Delta to ensure 100% full close
             qty_to_close = remaining_qty
             for p_info in self.live_positions_cache.values():
                 if p_info.get("delta_symbol") == delta_symbol and p_info.get("contracts", 0) > 0:

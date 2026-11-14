@@ -138,16 +138,33 @@ class AutonomousDaemonV10:
 
     @staticmethod
     def _fetch_multi_exchange_klines(ticker: str, kraken_pair: str) -> Tuple[List[List[float]], str]:
+        # 1. Primary: Delta Exchange India 5m Perpetual Candles (Zero Cross-Exchange Basis Mismatch!)
         try:
-            url = f"https://data-api.binance.vision/api/v3/klines?symbol={ticker}&interval=5m&limit=200"
+            delta_sym = ticker.replace("USDT", "USD")
+            end_ts = int(time.time())
+            start_ts = end_ts - (210 * 300)
+            url = f"https://api.india.delta.exchange/v2/history/candles?resolution=5m&symbol={delta_sym}&start={start_ts}&end={end_ts}"
             req = urllib.request.Request(url, headers={"User-Agent": "ApexOmegaV10/10.0"})
             with urllib.request.urlopen(req, timeout=3.0) as resp:
-                rows = json.loads(resp.read().decode("utf-8"))
-                if rows and len(rows) >= 30:
-                    return [[float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in rows], "BINANCE_LIVE_5M"
+                data = json.loads(resp.read().decode("utf-8"))
+                rows = data.get("result", [])
+                if rows and len(rows) >= 40:
+                    rows = sorted(rows, key=lambda x: int(x.get("time", 0)))
+                    return [
+                        [
+                            float(r["time"]) * 1000.0,
+                            float(r["open"]),
+                            float(r["high"]),
+                            float(r["low"]),
+                            float(r["close"]),
+                            float(r.get("volume") or 1.0),
+                        ]
+                        for r in rows
+                    ], "DELTA_INDIA_5M"
         except Exception:
             pass
 
+        # 2. Secondary: Bybit V5 5m (Matches V9 Paper Engine primary feed!)
         try:
             url = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={ticker}&interval=5&limit=200"
             req = urllib.request.Request(url, headers={"User-Agent": "ApexOmegaV10/10.0"})
@@ -157,6 +174,17 @@ class AutonomousDaemonV10:
                 if rows and len(rows) >= 30:
                     rows = list(reversed(rows))
                     return [[float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in rows], "BYBIT_LIVE_5M"
+        except Exception:
+            pass
+
+        # 3. Tertiary: Binance Vision 5m
+        try:
+            url = f"https://data-api.binance.vision/api/v3/klines?symbol={ticker}&interval=5m&limit=200"
+            req = urllib.request.Request(url, headers={"User-Agent": "ApexOmegaV10/10.0"})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                rows = json.loads(resp.read().decode("utf-8"))
+                if rows and len(rows) >= 30:
+                    return [[float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])] for r in rows], "BINANCE_LIVE_5M"
         except Exception:
             pass
 
@@ -244,10 +272,10 @@ class AutonomousDaemonV10:
                         "tp1_hit": False,
                         "tp1_banked_pnl_inr": 0.0,
                         "ratchet_stage": 0,
-                        "chandelier_stop": fmt_price(ep * (1.0 - dir_m * 0.0040)),
+                        "chandelier_stop": fmt_price(ep * (1.0 - dir_m * 0.0024)),
                         "breakeven_locked": False,
                         "breakeven_stop": None,
-                        "effective_stop": fmt_price(ep * (1.0 - dir_m * 0.0040)),
+                        "effective_stop": fmt_price(ep * (1.0 - dir_m * 0.0024)),
                         "filled_units": 1,
                         "max_stage_reached": "V10_SNIPER_OPEN",
                         "total_notional_inr": notional_inr,
@@ -291,7 +319,14 @@ class AutonomousDaemonV10:
                         self._reconcile_latest_trade_with_delta_wallet(camp, real_bal)
                     continue
 
-            tick_price = float(live_pos["mark_price"]) if (live_pos and live_pos.get("mark_price")) else (live_item["price"] if live_item else camp["current_price"])
+            scanner_p = float(live_item["price"]) if live_item else float(camp["current_price"])
+            mark_p = float(live_pos["mark_price"]) if (live_pos and live_pos.get("mark_price")) else scanner_p
+            # Update peak excursion using both live trade price and mark price so Stage 0.5/1/2/3 ratchets never miss a move!
+            if camp["side"] == "LONG" and max(scanner_p, mark_p) > camp["highest_extreme"]:
+                camp["highest_extreme"] = fmt_price(max(scanner_p, mark_p))
+            elif camp["side"] == "SHORT" and min(scanner_p, mark_p) < camp["highest_extreme"]:
+                camp["highest_extreme"] = fmt_price(min(scanner_p, mark_p))
+            tick_price = scanner_p
             prev_stage = camp.get("ratchet_stage", 0)
             prev_stop = camp.get("effective_stop")
 
@@ -397,19 +432,38 @@ class AutonomousDaemonV10:
         if self.live_router.is_live() and self.active_campaigns:
             camp = self.active_campaigns[-1]
             if camp["symbol"] == sig["symbol"]:
+                is_tier1 = camp["symbol"] in TIER1_ALPHA_SYMBOLS
+                # Exact V9 Final Capped Stop Geometry: -0.22% price stop (~-1.4% before fees = ~-₹180 total on 6.5x, matching V9's tight capped stop!)
+                # Or 0.25% on Tier-2 so no single stop can EVER lose ₹366-₹450!
+                stop_dist = 0.0024 if is_tier1 else 0.0026
                 res = await self.live_router.open_live_trade(
                     scanner_symbol=camp["symbol"],
                     side=camp["side"],
                     notional_inr=camp["total_notional_inr"],
                     entry_price=camp["base_entry_price"],
-                    stop_price=camp["effective_stop"],
+                    stop_dist_pct=stop_dist,
                 )
                 if res:
+                    fill_p = float(res["fill_price"])
+                    direction = 1.0 if camp["side"] == "LONG" else -1.0
+                    exact_stop = fmt_price(fill_p * (1.0 - direction * stop_dist))
                     camp["delta_symbol"] = res["delta_symbol"]
                     camp["live_qty"] = res["qty"]
                     camp["remaining_qty"] = res["remaining_qty"]
                     camp["stop_order_id"] = res["stop_order_id"]
-                    camp["base_entry_price"] = fmt_price(res["fill_price"])
+                    camp["base_entry_price"] = fmt_price(fill_p)
+                    camp["current_price"] = fmt_price(fill_p)
+                    camp["highest_extreme"] = fmt_price(fill_p)
+                    camp["tp1_price"] = fmt_price(fill_p * (1.0 + direction * 0.0068))
+                    camp["tp2_price"] = fmt_price(fill_p * (1.0 + direction * 0.0160))
+                    camp["chandelier_stop"] = exact_stop
+                    camp["effective_stop"] = exact_stop
+                    if res.get("actual_notional_inr") and res["actual_notional_inr"] > 0:
+                        camp["total_notional_inr"] = res["actual_notional_inr"]
+                    if camp.get("tranches"):
+                        camp["tranches"][0]["trigger_price"] = fmt_price(fill_p)
+                        camp["tranches"][0]["fill_price"] = fmt_price(fill_p)
+                        camp["tranches"][0]["notional_inr"] = camp["total_notional_inr"]
                     self.save_state()
                 else:
                     self.active_campaigns.remove(camp)
@@ -425,7 +479,7 @@ class AutonomousDaemonV10:
         entry_price = float(sig["price"])
         is_tier1 = sig["symbol"] in TIER1_ALPHA_SYMBOLS
 
-        stop_dist = 0.0040 if is_tier1 else 0.0048
+        stop_dist = 0.0024 if is_tier1 else 0.0026
         stage2_trig = fmt_price(entry_price * (1.0 + direction * 0.0068))
         stage4_tp = fmt_price(entry_price * (1.0 + direction * 0.0160))
         initial_stop = fmt_price(entry_price * (1.0 - direction * stop_dist))
@@ -493,19 +547,19 @@ class AutonomousDaemonV10:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # Stage 0.5 Zero-Loss Shield (+0.25% move): Locks Stop at Entry + 0.08%
+        # Stage 0.5 Zero-Loss Shield (+0.25% move): Locks Stop at Entry + 0.15% (Net GREEN win after 0.118% Delta Fee+GST!)
         if max_fav_pct >= 0.0025 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0008))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0015))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "ZERO_LOSS_SHIELD_LOCKED"
 
-        # Stage 1 (+0.42% move, ~+₹275 open profit): Locks Stop at Entry + 0.24% (+1.50% guaranteed win!)
+        # Stage 1 (+0.42% move, ~+₹275 open profit): Locks Stop at Entry + 0.30% (Net +₹120+ win after Delta Fee+GST!)
         if max_fav_pct >= 0.0042 and camp.get("ratchet_stage", 0) < 1:
             camp["ratchet_stage"] = 1
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0024))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0030))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_1_PROFIT_LOCKED"
 
