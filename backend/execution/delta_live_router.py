@@ -302,8 +302,9 @@ class DeltaIndiaLiveRouter:
         side: str,
         remaining_qty: float,
         stop_order_id: Optional[str],
+        prefer_maker: bool = False,
     ) -> Optional[float]:
-        """Flattens the open Delta position on Ratchet Stop, Scratch, or Target hit."""
+        """Flattens the open Delta position on Ratchet Stop, Scratch, or Target hit (uses Maker-First on profit targets to save 60% exit fees!)."""
         if not await self.ensure_ready() or not delta_symbol:
             return None
         try:
@@ -322,6 +323,9 @@ class DeltaIndiaLiveRouter:
             if qty_to_close <= 0:
                 return None
             close_side = "sell" if side == "LONG" else "buy"
+            if prefer_maker:
+                res = await self._place_maker_or_fast_order(delta_symbol, close_side, qty_to_close, ref_p, reduce_only=True)
+                return float(res.get("average") or ref_p or 0.0) or None
             close_order = await self.exchange.create_order(
                 delta_symbol, "market", close_side, qty_to_close, None, {"reduceOnly": True}
             )

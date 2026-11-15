@@ -342,11 +342,13 @@ class AutonomousDaemonV10:
             if self.live_router.is_live() and camp.get("delta_symbol"):
                 if camp not in self.active_campaigns:
                     # Direct market close on Delta when V10 ratchet stop, 25m scratch, or Stage 4 target hits!
+                    is_profit_exit = float(camp.get("ratchet_stage", 0)) >= 0.5
                     fill_exit_p = await self.live_router.close_live_trade(
                         camp["delta_symbol"],
                         camp["side"],
                         float(camp.get("remaining_qty") or camp.get("live_qty") or 0.0),
                         camp.get("stop_order_id"),
+                        prefer_maker=is_profit_exit,
                     )
                     if fill_exit_p and self.state.get("trade_history"):
                         self.state["trade_history"][0]["exit_price"] = fmt_price(fill_exit_p)
@@ -604,8 +606,10 @@ class AutonomousDaemonV10:
                 self.close_campaign(camp, exit_price=live_price, reason="TIME_DECAY_SCRATCH_WIN")
                 return
 
-        stop_hit = (side == "LONG" and live_price <= camp["effective_stop"]) or (
-            side == "SHORT" and live_price >= camp["effective_stop"]
+        # Require >12s after entry before software stop check fires (exchange hardware stop_market is already active; prevents 1-tick spread bounce exits)
+        stop_hit = (age_sec >= 12.0 or camp.get("ratchet_stage", 0) >= 0.5) and (
+            (side == "LONG" and live_price <= camp["effective_stop"])
+            or (side == "SHORT" and live_price >= camp["effective_stop"])
         )
         if stop_hit:
             st = camp.get("ratchet_stage", 0)

@@ -83,7 +83,10 @@ class SqueezeEngine:
         return SqueezeEngine._ema(tr, period)
 
     def evaluate_ohlcv(self, symbol: str, ohlcv: List[List[float]], feed_source: str = "BYBIT_LIVE_5M") -> QuantV9Signal:
-        arr = np.array(ohlcv, dtype=float)
+        full_arr = np.array(ohlcv, dtype=float)
+        live_tick_price = float(full_arr[-1, 4])
+        # Use completed 5-minute candles (full_arr[:-1]) for entry signal evaluation so mid-bar 1.5s wicks never trigger false entries!
+        arr = full_arr[:-1] if len(full_arr) > 35 else full_arr
         open_p = arr[:, 1]
         high = arr[:, 2]
         low = arr[:, 3]
@@ -282,7 +285,7 @@ class SqueezeEngine:
 
         return QuantV9Signal(
             symbol=symbol,
-            price=float(close[-1]),
+            price=live_tick_price,
             atr_14=eff_atr,
             vwap=float(vwap),
             z_score=z_score,
