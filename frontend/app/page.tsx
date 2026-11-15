@@ -173,7 +173,7 @@ UNIVERSE_PAIRS.forEach((p) => {
   DELTA_TO_SCANNER_MAP[p.ticker] = p.symbol;
 });
 
-const DEFAULT_RENDER_BACKEND_URL = "https://apex-omega-v9-original-live.onrender.com";
+const DEFAULT_RENDER_BACKEND_URL = "https://apex-omega-v10-live-t5l0.onrender.com";
 const USD_INR_RATE = 85.0;
 // Exact Delta Exchange India Taker Fee (0.05%) + 18% GST = 0.059% per side (0.118% round-trip)
 const DELTA_FEE_WITH_GST_RATE = 0.00059;
@@ -287,16 +287,30 @@ export default function App() {
 
   useEffect(() => {
     try {
+      const isBrowser = typeof window !== "undefined";
+      const browserOrigin = isBrowser && window.location.origin && window.location.origin.startsWith("http")
+        ? window.location.origin.replace(/\/+$/, "")
+        : "";
+
       const envUrl =
         typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_API_URL
-          ? process.env.NEXT_PUBLIC_API_URL
+          ? process.env.NEXT_PUBLIC_API_URL.replace(/\/+$/, "")
           : "";
-      const savedUrl = localStorage.getItem(RENDER_URL_KEY) || envUrl || DEFAULT_RENDER_BACKEND_URL;
-      if (savedUrl) {
-        const cleaned = savedUrl.replace(/\/+$/, "");
-        setRenderUrl(cleaned);
-        setRenderUrlInput(cleaned);
+
+      let savedUrl = isBrowser ? localStorage.getItem(RENDER_URL_KEY) : null;
+      // Auto-migrate from any stale/offline URLs to current live origin
+      if (!savedUrl || savedUrl.includes("v9-original-live") || savedUrl.includes("localhost")) {
+        savedUrl = browserOrigin || envUrl || DEFAULT_RENDER_BACKEND_URL;
+        if (isBrowser) {
+          localStorage.setItem(RENDER_URL_KEY, savedUrl);
+        }
+      } else {
+        savedUrl = savedUrl.replace(/\/+$/, "");
       }
+
+      const activeUrl = browserOrigin || savedUrl || envUrl || DEFAULT_RENDER_BACKEND_URL;
+      setRenderUrl(activeUrl);
+      setRenderUrlInput(activeUrl);
 
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
