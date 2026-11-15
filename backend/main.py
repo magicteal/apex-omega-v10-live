@@ -471,8 +471,12 @@ class AutonomousDaemonV10:
 
     def _enter_new_campaign(self, sig: Dict[str, Any]) -> None:
         active_eq = float(self.state["active_equity"])
-        lev = 7.2 if sig["confluence_score"] >= 98 else 6.5
-        total_notional = round(active_eq * lev, 2)
+        peak_eq = max(float(self.state.get("peak_equity", active_eq)), active_eq, 1.0)
+        dd_ratio = (peak_eq - active_eq) / peak_eq
+        lev = 4.0 if dd_ratio > 0.15 else (7.2 if sig["confluence_score"] >= 98 else 6.5)
+        # Cap base stake at ₹3.5L notional so Maker order-book liquidity on Delta India stays instant
+        eff_eq = min(active_eq, 350000.0 / lev)
+        total_notional = round(eff_eq * lev, 2)
 
         side = "SHORT" if sig["regime"] == "SHORT_IGNITION" else "LONG"
         direction = 1.0 if side == "LONG" else -1.0
@@ -547,11 +551,11 @@ class AutonomousDaemonV10:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # Stage 0.5 Zero-Loss Shield (+0.18% move): Locks Stop at Entry + 0.10% (Net GREEN win after 0.0472% Maker Fee+GST!)
-        if max_fav_pct >= 0.0018 and camp.get("ratchet_stage", 0) < 0.5:
+        # Stage 0.5 Zero-Loss Shield (+0.20% move): Locks Stop at Entry + 0.13% (Net GREEN win after Maker Fee+GST & slippage!)
+        if max_fav_pct >= 0.0020 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0010))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0013))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "ZERO_LOSS_SHIELD_LOCKED"
 

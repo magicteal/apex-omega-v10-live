@@ -260,7 +260,7 @@ function evaluateQuantV4(
   const ema9 = calcEma(close, Math.min(9, n));
   const ema200 = calcEma(close, Math.min(200, n));
   const trueAtrPct = atr14[n - 1] / Math.max(close[n - 1], 1e-12);
-  const isTier1 = ["BTC/USDT:USDT", "SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "BNB/USDT:USDT"].includes(pairMeta.symbol);
+  const isTier1 = ["SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT"].includes(pairMeta.symbol);
   const tierBonus = isTier1 ? 2 : 0;
   const minKerGate = isTier1 ? 0.16 : 0.25;
   const volGateOk = trueAtrPct >= 0.0014 && ker >= minKerGate;
@@ -610,7 +610,7 @@ export default function App() {
       const direction = side === "LONG" ? 1.0 : -1.0;
       const entryPrice = fmtPrice(sig.price);
       const atr = Math.max(sig.atr_14, entryPrice * 0.0065);
-      const isTier1 = ["BTC/USDT:USDT", "SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "BNB/USDT:USDT"].includes(sig.symbol);
+      const isTier1 = ["SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT"].includes(sig.symbol);
       const stopDist = isTier1 ? 0.0040 : 0.0048;
 
       const tp1Price = fmtPrice(entryPrice * (1.0 + direction * 0.0068));

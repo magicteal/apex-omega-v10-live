@@ -14,13 +14,11 @@ from typing import List, Dict, Any
 import numpy as np
 
 TIER1_ALPHA_SYMBOLS = {
-    "BTC/USDT:USDT",
     "SOL/USDT:USDT",
     "SUI/USDT:USDT",
     "LINK/USDT:USDT",
     "DOGE/USDT:USDT",
     "ADA/USDT:USDT",
-    "BNB/USDT:USDT",
 }
 
 
