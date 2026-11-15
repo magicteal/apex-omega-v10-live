@@ -7,6 +7,7 @@ interface AssetSignal {
   bybitSymbol: string;
   okxInstId: string;
   krakenPair: string;
+  deltaSymbol: string;
   coingeckoId: string;
   price: number;
   atr_14: number;
@@ -20,8 +21,8 @@ interface AssetSignal {
   ema_trend_slope: number;
   rvol: number;
   roc5: number;
-  ker: number; // Kaufman Efficiency Ratio (0.00 to 1.00)
-  confluence_score: number; // 0 to 100 multi-factor quant score
+  ker: number;
+  confluence_score: number;
   setup_type: string;
   regime: "LONG_IGNITION" | "SHORT_IGNITION" | "COILING" | "NEUTRAL";
   signal_valid: boolean;
@@ -44,18 +45,24 @@ interface TrancheUnit {
 interface ActiveCampaign {
   trade_id: string;
   symbol: string;
+  delta_symbol?: string;
   side: "LONG" | "SHORT";
   setup_type: string;
   confluence_score: number;
   entry_time: string;
+  entry_price_raw?: number;
+  mark_price_raw?: number;
   base_entry_price: number;
   current_price: number;
   highest_extreme: number;
   atr_at_entry: number;
   tp1_price: number;
+  tp2_price?: number;
   tp1_hit: boolean;
   tp1_banked_pnl_inr: number;
+  ratchet_stage?: number;
   chandelier_stop: number;
+  soft_stop?: number;
   breakeven_locked: boolean;
   breakeven_stop: number | null;
   effective_stop: number;
@@ -64,12 +71,20 @@ interface ActiveCampaign {
   total_notional_inr: number;
   total_unrealized_pnl_inr: number;
   rvol_at_entry: number;
+  live_qty?: number;
+  remaining_qty?: number;
+  coin_qty?: number;
+  liquidation_price?: number;
+  margin_inr?: number;
+  stop_order_id?: string | null;
+  is_live_delta?: boolean;
   tranches: TrancheUnit[];
 }
 
 interface ClosedTradeRecord {
   trade_id: string;
   symbol: string;
+  delta_symbol?: string;
   side: "LONG" | "SHORT";
   setup_type?: string;
   confluence_score?: number;
@@ -85,6 +100,48 @@ interface ClosedTradeRecord {
   exit_reason: string;
   balance_after_inr: number;
   outcome: "WIN" | "LOSS";
+  is_live_delta?: boolean;
+}
+
+interface DeltaLivePosition {
+  product_id?: number;
+  delta_symbol: string;
+  symbol: string;
+  side: "LONG" | "SHORT";
+  contracts: number;
+  contract_value: number;
+  coin_qty: number;
+  entry_price_raw?: number;
+  mark_price_raw?: number;
+  entry_price: number;
+  mark_price: number;
+  liquidation_price: number;
+  margin_inr: number;
+  notional_inr: number;
+  unrealized_pnl_inr: number;
+  unrealized_pnl_usd: number;
+  realized_pnl_inr: number;
+  roi_pct: number;
+  stop_order_id?: string | null;
+  stop_price?: number | null;
+  updated_at?: string;
+}
+
+interface DeltaLiveFill {
+  fill_id: string;
+  order_id: string;
+  delta_symbol: string;
+  symbol: string;
+  side: string;
+  contracts: number;
+  coin_qty: number;
+  price: number;
+  notional_inr: number;
+  fee_inr: number;
+  realized_pnl_inr: number | null;
+  role: string;
+  fill_type: string;
+  timestamp: string;
 }
 
 interface TradePopupAlert {
@@ -97,268 +154,93 @@ interface TradePopupAlert {
   trade_id?: string;
 }
 
-// Accurate real-world baseline seed prices (immediately overwritten by live WebSocket/REST feeds on load)
 const UNIVERSE_PAIRS = [
-  { symbol: "SOL/USDT:USDT", ticker: "SOLUSDT", bybitSymbol: "SOLUSDT", okxInstId: "SOL-USDT-SWAP", krakenPair: "SOLUSD", coingeckoId: "solana", seedPrice: 95.86, seedAtr: 0.68 },
-  { symbol: "BTC/USDT:USDT", ticker: "BTCUSDT", bybitSymbol: "BTCUSDT", okxInstId: "BTC-USDT-SWAP", krakenPair: "XBTUSD", coingeckoId: "bitcoin", seedPrice: 80112.50, seedAtr: 380.00 },
-  { symbol: "ETH/USDT:USDT", ticker: "ETHUSDT", bybitSymbol: "ETHUSDT", okxInstId: "ETH-USDT-SWAP", krakenPair: "ETHUSD", coingeckoId: "ethereum", seedPrice: 2419.40, seedAtr: 14.80 },
-  { symbol: "SUI/USDT:USDT", ticker: "SUIUSDT", bybitSymbol: "SUIUSDT", okxInstId: "SUI-USDT-SWAP", krakenPair: "SUIUSD", coingeckoId: "sui", seedPrice: 0.9366, seedAtr: 0.0085 },
-  { symbol: "DOGE/USDT:USDT", ticker: "DOGEUSDT", bybitSymbol: "DOGEUSDT", okxInstId: "DOGE-USDT-SWAP", krakenPair: "XDGUSD", coingeckoId: "dogecoin", seedPrice: 0.0768, seedAtr: 0.0007 },
-  { symbol: "XRP/USDT:USDT", ticker: "XRPUSDT", bybitSymbol: "XRPUSDT", okxInstId: "XRP-USDT-SWAP", krakenPair: "XRPUSD", coingeckoId: "ripple", seedPrice: 1.3048, seedAtr: 0.0110 },
-  { symbol: "BNB/USDT:USDT", ticker: "BNBUSDT", bybitSymbol: "BNBUSDT", okxInstId: "BNB-USDT-SWAP", krakenPair: "BNBUSD", coingeckoId: "binancecoin", seedPrice: 715.76, seedAtr: 4.10 },
-  { symbol: "AVAX/USDT:USDT", ticker: "AVAXUSDT", bybitSymbol: "AVAXUSDT", okxInstId: "AVAX-USDT-SWAP", krakenPair: "AVAXUSD", coingeckoId: "avalanche-2", seedPrice: 8.84, seedAtr: 0.082 },
-  { symbol: "LINK/USDT:USDT", ticker: "LINKUSDT", bybitSymbol: "LINKUSDT", okxInstId: "LINK-USDT-SWAP", krakenPair: "LINKUSD", coingeckoId: "chainlink", seedPrice: 11.55, seedAtr: 0.095 },
-  { symbol: "ADA/USDT:USDT", ticker: "ADAUSDT", bybitSymbol: "ADAUSDT", okxInstId: "ADA-USDT-SWAP", krakenPair: "ADAUSD", coingeckoId: "cardano", seedPrice: 0.3650, seedAtr: 0.0032 },
+  { symbol: "LINK/USDT:USDT", ticker: "LINKUSDT", bybitSymbol: "LINKUSDT", okxInstId: "LINK-USDT-SWAP", krakenPair: "LINKUSD", deltaSymbol: "LINKUSD", coingeckoId: "chainlink", seedPrice: 11.55, seedAtr: 0.095 },
+  { symbol: "DOGE/USDT:USDT", ticker: "DOGEUSDT", bybitSymbol: "DOGEUSDT", okxInstId: "DOGE-USDT-SWAP", krakenPair: "XDGUSD", deltaSymbol: "DOGEUSD", coingeckoId: "dogecoin", seedPrice: 0.0768, seedAtr: 0.0007 },
+  { symbol: "SOL/USDT:USDT", ticker: "SOLUSDT", bybitSymbol: "SOLUSDT", okxInstId: "SOL-USDT-SWAP", krakenPair: "SOLUSD", deltaSymbol: "SOLUSD", coingeckoId: "solana", seedPrice: 95.86, seedAtr: 0.68 },
+  { symbol: "AVAX/USDT:USDT", ticker: "AVAXUSDT", bybitSymbol: "AVAXUSDT", okxInstId: "AVAX-USDT-SWAP", krakenPair: "AVAXUSD", deltaSymbol: "AVAXUSD", coingeckoId: "avalanche-2", seedPrice: 8.84, seedAtr: 0.082 },
+  { symbol: "ADA/USDT:USDT", ticker: "ADAUSDT", bybitSymbol: "ADAUSDT", okxInstId: "ADA-USDT-SWAP", krakenPair: "ADAUSD", deltaSymbol: "ADAUSD", coingeckoId: "cardano", seedPrice: 0.3650, seedAtr: 0.0032 },
+  { symbol: "BTC/USDT:USDT", ticker: "BTCUSDT", bybitSymbol: "BTCUSDT", okxInstId: "BTC-USDT-SWAP", krakenPair: "XBTUSD", deltaSymbol: "BTCUSD", coingeckoId: "bitcoin", seedPrice: 80112.50, seedAtr: 380.00 },
+  { symbol: "ETH/USDT:USDT", ticker: "ETHUSDT", bybitSymbol: "ETHUSDT", okxInstId: "ETH-USDT-SWAP", krakenPair: "ETHUSD", deltaSymbol: "ETHUSD", coingeckoId: "ethereum", seedPrice: 2419.40, seedAtr: 14.80 },
+  { symbol: "SUI/USDT:USDT", ticker: "SUIUSDT", bybitSymbol: "SUIUSDT", okxInstId: "SUI-USDT-SWAP", krakenPair: "SUIUSD", deltaSymbol: "SUIUSD", coingeckoId: "sui", seedPrice: 0.9366, seedAtr: 0.0085 },
+  { symbol: "XRP/USDT:USDT", ticker: "XRPUSDT", bybitSymbol: "XRPUSDT", okxInstId: "XRP-USDT-SWAP", krakenPair: "XRPUSD", deltaSymbol: "XRPUSD", coingeckoId: "ripple", seedPrice: 1.3048, seedAtr: 0.0110 },
+  { symbol: "BNB/USDT:USDT", ticker: "BNBUSDT", bybitSymbol: "BNBUSDT", okxInstId: "BNB-USDT-SWAP", krakenPair: "BNBUSD", deltaSymbol: "BNBUSD", coingeckoId: "binancecoin", seedPrice: 715.76, seedAtr: 4.10 },
 ];
 
-// PASTE YOUR RENDER BACKEND URL HERE (OR IN VERCEL ENV NEXT_PUBLIC_API_URL) SO ALL DEVICES SYNC TO 1 SHARED 24/7 SERVER:
-const DEFAULT_RENDER_BACKEND_URL = typeof window !== "undefined" ? window.location.origin : "";
+const DELTA_TO_SCANNER_MAP: Record<string, string> = {};
+UNIVERSE_PAIRS.forEach((p) => {
+  DELTA_TO_SCANNER_MAP[p.deltaSymbol] = p.symbol;
+  DELTA_TO_SCANNER_MAP[p.ticker] = p.symbol;
+});
+
+const DEFAULT_RENDER_BACKEND_URL = "https://apex-omega-v9-original-live.onrender.com";
+const USD_INR_RATE = 85.0;
+// Exact Delta Exchange India Taker Fee (0.05%) + 18% GST = 0.059% per side (0.118% round-trip)
+const DELTA_FEE_WITH_GST_RATE = 0.00059;
 
 function fmtPrice(val: number): number {
   if (!val || isNaN(val)) return 0;
   if (Math.abs(val) < 0.01) return +val.toFixed(8);
-  if (Math.abs(val) < 1.0) return +val.toFixed(5);
-  if (Math.abs(val) < 50.0) return +val.toFixed(4);
-  return +val.toFixed(2);
-}
-
-const STORAGE_KEY = "apex_omega_real_state_v10_live";
-const RENDER_URL_KEY = "apex_omega_render_url_v10_live";
-
-function calcEma(values: number[], span: number): number[] {
-  const alpha = 2.0 / (span + 1.0);
-  const res = new Array(values.length).fill(0);
-  res[0] = values[0];
-  for (let i = 1; i < values.length; i++) {
-    res[i] = alpha * values[i] + (1.0 - alpha) * res[i - 1];
-  }
-  return res;
-}
-
-function calcRsi(closes: number[], period: number): number {
-  if (closes.length <= period) return 50.0;
-  let gains = 0;
-  let losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
-  }
-  if (losses === 0) return 98.0;
-  const rs = (gains / period) / (losses / period);
-  return +(100.0 - 100.0 / (1.0 + rs)).toFixed(1);
+  if (Math.abs(val) < 1.0) return +val.toFixed(6);
+  if (Math.abs(val) < 50.0) return +val.toFixed(5);
+  return +val.toFixed(3);
 }
 
 /**
- * OMEGA-QUANT V4: 6-Factor High-Win-Rate (75-82% Target) 5m Confluence Engine
- * Combines:
- * 1. Institutional Rolling VWAP & Z-Score Deviation
- * 2. Connors 2-Period RSI (RSI-2) Pullback Exhaustion (< 18 Long / > 82 Short)
- * 3. Multi-EMA Kalman Trend Alignment (EMA-21 / EMA-50 / EMA-100)
- * 4. Order-Flow Wick Rejection & Volume Absorption (RVOL)
- * 5. Bollinger/Keltner Volatility Compression Release
- * 6. Micro-Momentum Inflection (ROC5 + Candle Body Ratio)
+ * Single Authoritative PnL Function — Matches Backend `compute_exact_position_pnl` 1:1.
+ * Uses full-precision entryPriceRaw, markPriceRaw, and coinQty so PnL NEVER flickers green/red!
  */
-function evaluateQuantV4(
-  pairMeta: (typeof UNIVERSE_PAIRS)[0],
-  klines: number[][],
-  feedSource: string
-): AssetSignal {
-  const open = klines.map((k) => k[1]);
-  const high = klines.map((k) => k[2]);
-  const low = klines.map((k) => k[3]);
-  const close = klines.map((k) => k[4]);
-  const vol = klines.map((k) => k[5]);
-  const n = close.length;
-
-  const tr = new Array(n).fill(0);
-  tr[0] = Math.max(high[0] - low[0], close[0] * 0.002);
-  for (let i = 1; i < n; i++) {
-    tr[i] = Math.max(
-      high[i] - low[i],
-      Math.abs(high[i] - close[i - 1]),
-      Math.abs(low[i] - close[i - 1])
-    );
+function computeExactPositionPnlInr(
+  side: "LONG" | "SHORT" | string,
+  entryPriceRaw: number,
+  markPriceRaw: number,
+  coinQty: number | undefined,
+  notionalInr: number
+): number {
+  if (!entryPriceRaw || !markPriceRaw || entryPriceRaw <= 0 || markPriceRaw <= 0) {
+    return 0.0;
   }
-  const atr20 = calcEma(tr, 20);
-  const atr14 = calcEma(tr, 14);
-  const ema21 = calcEma(close, Math.min(21, n));
-  const ema50 = calcEma(close, Math.min(50, n));
-  const ema100 = calcEma(close, Math.min(100, n));
-
-  // Rolling 20-period Institutional VWAP & Standard Deviation Z-Score
-  const winLen = Math.min(20, n);
-  let pvSum = 0;
-  let vSum = 0;
-  for (let i = n - winLen; i < n; i++) {
-    const typ = (high[i] + low[i] + close[i]) / 3.0;
-    const v = Math.max(vol[i], 1e-9);
-    pvSum += typ * v;
-    vSum += v;
-  }
-  const vwap = pvSum / Math.max(vSum, 1e-9);
-  const slice20 = close.slice(n - winLen);
-  const mean20 = slice20.reduce((a, b) => a + b, 0) / slice20.length;
-  const std20 = Math.sqrt(
-    slice20.reduce((a, b) => a + (b - mean20) ** 2, 0) / Math.max(slice20.length, 1)
-  );
-  const zScore = +((close[n - 1] - vwap) / Math.max(std20, close[n - 1] * 0.001)).toFixed(2);
-
-  // TTM Squeeze & Compression Ratio
-  let squeezeCount = 0;
-  let currentComp = 1.0;
-  let squeezeNow = false;
-  for (let offset = Math.min(9, n - 20); offset >= 0; offset--) {
-    const idx = n - 1 - offset;
-    const sub = close.slice(idx - 19, idx + 1);
-    const m = sub.reduce((a, b) => a + b, 0) / sub.length;
-    const s = Math.sqrt(sub.reduce((a, b) => a + (b - m) ** 2, 0) / sub.length);
-    const bbU = m + 2.0 * s;
-    const bbL = m - 2.0 * s;
-    const kcMid = ema20At(close, idx);
-    const kcU = kcMid + 1.5 * atr20[idx];
-    const kcL = kcMid - 1.5 * atr20[idx];
-    const inSq = bbU < kcU && bbL > kcL;
-    if (inSq) squeezeCount++;
-    if (offset === 0) {
-      currentComp = +((bbU - bbL) / Math.max(kcU - kcL, 1e-9)).toFixed(2);
-      squeezeNow = inSq;
-    }
-  }
-
-  const rsi2 = calcRsi(close, 2);
-  const rsi14 = calcRsi(close, 14);
-
-  const emaNow = ema50[n - 1];
-  const emaPrev = ema50[Math.max(0, n - 6)];
-  const emaSlope = (emaNow - emaPrev) / Math.max(emaPrev, 1e-9);
-
-  const volSlice = vol.slice(Math.max(0, n - 21), n - 1);
-  const volMean = volSlice.reduce((a, b) => a + b, 0) / Math.max(volSlice.length, 1);
-  const rvol = +(vol[n - 1] / Math.max(volMean, 1e-9)).toFixed(2);
-
-  const close5 = close[Math.max(0, n - 6)];
-  const roc5 = +((close[n - 1] - close5) / Math.max(close5, 1e-9)).toFixed(5);
-
-  // Kaufman Efficiency Ratio (10-period) to distinguish Mean-Reversion vs Runaway Trend
-  const kerPeriod = Math.min(10, n - 1);
-  const netDirMove = Math.abs(close[n - 1] - close[n - 1 - kerPeriod]);
-  let pathSum = 0;
-  for (let i = n - kerPeriod; i < n; i++) {
-    pathSum += Math.abs(close[i] - close[i - 1]);
-  }
-  const ker = +(netDirMove / Math.max(pathSum, 1e-12)).toFixed(2);
-
-  // Wick Rejection & Candle Micro-Structure
-  const curRange = Math.max(high[n - 1] - low[n - 1], 1e-9);
-  const lowerWickRatio = (Math.min(open[n - 1], close[n - 1]) - low[n - 1]) / curRange;
-  const upperWickRatio = (high[n - 1] - Math.max(open[n - 1], close[n - 1])) / curRange;
-  const greenRebound = close[n - 1] >= open[n - 1] || close[n - 1] > close[n - 2];
-  const redRebound = close[n - 1] <= open[n - 1] || close[n - 1] < close[n - 2];
-
-  // V9.0 DUAL-CORE REGIME SNIPER (Core A: Trend-Exhaustion Sniper + Core B: 3-Bar EMA-9/21 Pullback Surge)
-  const ema9 = calcEma(close, Math.min(9, n));
-  const ema200 = calcEma(close, Math.min(200, n));
-  const trueAtrPct = atr14[n - 1] / Math.max(close[n - 1], 1e-12);
-  const isTier1 = ["SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT"].includes(pairMeta.symbol);
-  const tierBonus = isTier1 ? 2 : 0;
-  const minKerGate = isTier1 ? 0.16 : 0.25;
-  const volGateOk = trueAtrPct >= 0.0014 && ker >= minKerGate;
-
-  const greenBounce = close[n - 1] > open[n - 1] && close[n - 1] >= close[n - 2];
-  const redBounce = close[n - 1] < open[n - 1] && close[n - 1] <= close[n - 2];
-
-  // Core A: Trend-Aligned RSI-2 / VWAP Absorption Sniper (with ROC5 Knife-Catch Protection)
-  const coreABull = volGateOk && close[n - 1] >= ema200[n - 1] * 0.996 && ema21[n - 1] > ema50[n - 1] && ema50[n - 1] >= ema100[n - 1] * 0.9995 && emaSlope >= 0.00030 && roc5 > -0.0060;
-  const coreABear = volGateOk && close[n - 1] <= ema200[n - 1] * 1.004 && ema21[n - 1] < ema50[n - 1] && ema50[n - 1] <= ema100[n - 1] * 1.0005 && emaSlope <= -0.00030 && roc5 < 0.0060;
-
-  let scoreABull = 38 + tierBonus + (coreABull ? 22 : 0) + (rsi2 <= 22 ? 19 : 0) + (zScore <= -1.00 ? 11 : 0) + ((greenBounce || lowerWickRatio >= 0.28) ? 10 : 0) + (rvol >= 1.08 ? 6 : 0);
-  let scoreABear = 38 + tierBonus + (coreABear ? 22 : 0) + (rsi2 >= 78 ? 19 : 0) + (zScore >= 1.00 ? 11 : 0) + ((redBounce || upperWickRatio >= 0.28) ? 10 : 0) + (rvol >= 1.08 ? 6 : 0);
-
-  // Core B: 3-Bar EMA-9 / EMA-21 Pullback Continuation Surge
-  const coreBBull = volGateOk && close[n - 1] >= ema200[n - 1] * 0.998 && ema9[n - 1] >= ema21[n - 1] * 0.9995 && ema21[n - 1] > ema50[n - 1] && emaSlope >= 0.00035;
-  const coreBBear = volGateOk && close[n - 1] <= ema200[n - 1] * 1.002 && ema9[n - 1] <= ema21[n - 1] * 1.0005 && ema21[n - 1] < ema50[n - 1] && emaSlope <= -0.00035;
-  const recentLow3 = Math.min(low[n - 1], low[Math.max(0, n - 2)], low[Math.max(0, n - 3)]);
-  const recentHigh3 = Math.max(high[n - 1], high[Math.max(0, n - 2)], high[Math.max(0, n - 3)]);
-  const bullTouch = recentLow3 <= ema21[n - 1] * 1.0035 && greenBounce && close[n - 1] >= ema9[n - 1] * 0.9995;
-  const bearTouch = recentHigh3 >= ema21[n - 1] * 0.9965 && redBounce && close[n - 1] <= ema9[n - 1] * 1.0005;
-  const bullNotOver = zScore >= -1.35 && zScore <= 0.90 && rsi14 >= 42 && rsi14 <= 70;
-  const bearNotOver = zScore >= -0.90 && zScore <= 1.35 && rsi14 >= 30 && rsi14 <= 58;
-
-  let scoreBBull = 42 + tierBonus + (coreBBull ? 24 : 0) + (bullTouch ? 16 : 0) + (bullNotOver ? 11 : 0) + (rvol >= 1.02 ? 5 : 0);
-  let scoreBBear = 42 + tierBonus + (coreBBear ? 24 : 0) + (bearTouch ? 16 : 0) + (bearNotOver ? 11 : 0) + (rvol >= 1.02 ? 5 : 0);
-
-  const bullScore = Math.max(scoreABull, scoreBBull);
-  const bearScore = Math.max(scoreABear, scoreBBear);
-  const minReqScore = isTier1 ? 96 : 98;
-
-  const longAOk = coreABull && greenBounce && (rsi2 <= 22 || zScore <= -1.00) && scoreABull >= minReqScore;
-  const longBOk = coreBBull && bullTouch && bullNotOver && scoreBBull >= minReqScore;
-  const shortAOk = coreABear && redBounce && (rsi2 >= 78 || zScore >= 1.00) && scoreABear >= minReqScore;
-  const shortBOk = coreBBear && bearTouch && bearNotOver && scoreBBear >= minReqScore;
-
-  let regime: AssetSignal["regime"] = "NEUTRAL";
-  let setupType: AssetSignal["setup_type"] = "SCANNING";
-  let signalValid = false;
-  let score = Math.min(92, Math.max(bullScore, bearScore));
-
-  if (longAOk || longBOk) {
-    regime = "LONG_IGNITION";
-    setupType = longBOk ? "DUAL_CORE_PULLBACK_LONG" : "TREND_DIP_SNIPER_LONG";
-    score = Math.min(99, bullScore);
-    signalValid = true;
-  } else if (shortAOk || shortBOk) {
-    regime = "SHORT_IGNITION";
-    setupType = shortBOk ? "DUAL_CORE_PULLBACK_SHORT" : "TREND_DIP_SNIPER_SHORT";
-    score = Math.min(99, bearScore);
-    signalValid = true;
-  } else if (squeezeNow || squeezeCount > 0 || score >= 75) {
-    regime = "COILING";
-  }
-
-  return {
-    symbol: pairMeta.symbol,
-    ticker: pairMeta.ticker,
-    bybitSymbol: pairMeta.bybitSymbol,
-    okxInstId: pairMeta.okxInstId,
-    krakenPair: pairMeta.krakenPair,
-    coingeckoId: pairMeta.coingeckoId,
-    price: close[n - 1],
-    atr_14: Math.max(atr14[n - 1], close[n - 1] * 0.0065),
-    vwap,
-    z_score: zScore,
-    rsi_2: rsi2,
-    rsi_14: rsi14,
-    compression_ratio: currentComp,
-    squeeze_on: squeezeNow,
-    squeeze_bars_last_10: squeezeCount,
-    ema_trend_slope: +emaSlope.toFixed(6),
-    rvol,
-    roc5,
-    ker,
-    confluence_score: score,
-    setup_type: setupType,
-    regime,
-    signal_valid: signalValid,
-    feed_source: feedSource,
-  };
+  const dir = String(side).toUpperCase() === "LONG" ? 1.0 : -1.0;
+  const effCoinQty =
+    coinQty && coinQty > 0
+      ? coinQty
+      : (notionalInr / USD_INR_RATE) / Math.max(entryPriceRaw, 1e-12);
+  const upnlUsd = dir * (markPriceRaw - entryPriceRaw) * effCoinQty;
+  return +(upnlUsd * USD_INR_RATE).toFixed(2);
 }
 
-function ema20At(closes: number[], endIdx: number): number {
-  const slice = closes.slice(Math.max(0, endIdx - 30), endIdx + 1);
-  const arr = calcEma(slice, 20);
-  return arr[arr.length - 1];
-}
+const STORAGE_KEY = "apex_omega_real_state_v95_orig_live";
+const RENDER_URL_KEY = "apex_omega_render_url_v9_orig_live";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<"monitor" | "trades" | "cloud">("monitor");
+  const [tradeSubTab, setTradeSubTab] = useState<"closed" | "fills">("closed");
   const [tradeFilter, setTradeFilter] = useState<"ALL" | "WIN" | "LOSS">("ALL");
 
+  const [executionMode, setExecutionMode] = useState<string>("LIVE");
+  const [startingEquity, setStartingEquity] = useState<number>(10000.0);
   const [activeEquity, setActiveEquity] = useState<number>(10000.0);
   const [peakEquity, setPeakEquity] = useState<number>(10000.0);
   const [vaultBalance, setVaultBalance] = useState<number>(0.0);
   const [principalSiphoned, setPrincipalSiphoned] = useState<boolean>(false);
-  const [nextMilestone, setNextMilestone] = useState<number>(11500.0);
+  const [nextMilestone, setNextMilestone] = useState<number>(1000000.0);
+
+  const [deltaConnected, setDeltaConnected] = useState<boolean>(false);
+  const [deltaWsConnected, setDeltaWsConnected] = useState<boolean>(false);
+  const [browserDeltaWsLive, setBrowserDeltaWsLive] = useState<boolean>(false);
+  const [backendWsLive, setBackendWsLive] = useState<boolean>(false);
+  const [deltaLastSyncTs, setDeltaLastSyncTs] = useState<string | null>(null);
+  const [deltaWalletInr, setDeltaWalletInr] = useState<number | null>(null);
+  const [deltaAvailableInr, setDeltaAvailableInr] = useState<number | null>(null);
+  const [deltaPositionMarginInr, setDeltaPositionMarginInr] = useState<number>(0.0);
+  const [deltaWalletUsd, setDeltaWalletUsd] = useState<number>(0.0);
+  const [deltaOpenPnlInr, setDeltaOpenPnlInr] = useState<number | null>(null);
+  const [deltaOpenPositions, setDeltaOpenPositions] = useState<DeltaLivePosition[]>([]);
+  const [deltaFills, setDeltaFills] = useState<DeltaLiveFill[]>([]);
+  const [deltaApiError, setDeltaApiError] = useState<string | null>(null);
+  const [serverOutboundIp, setServerOutboundIp] = useState<string>("DETECTING...");
+  const [isSyncingDelta, setIsSyncingDelta] = useState<boolean>(false);
+
   const [scanner, setScanner] = useState<AssetSignal[]>(() =>
     UNIVERSE_PAIRS.map((p) => ({
       symbol: p.symbol,
@@ -366,6 +248,7 @@ export default function App() {
       bybitSymbol: p.bybitSymbol,
       okxInstId: p.okxInstId,
       krakenPair: p.krakenPair,
+      deltaSymbol: p.deltaSymbol,
       coingeckoId: p.coingeckoId,
       price: p.seedPrice,
       atr_14: p.seedAtr,
@@ -388,39 +271,19 @@ export default function App() {
     }))
   );
   const [activeCampaigns, setActiveCampaigns] = useState<ActiveCampaign[]>([]);
-  const pyramid = activeCampaigns.length > 0 ? activeCampaigns[0] : null;
   const [tradeHistory, setTradeHistory] = useState<ClosedTradeRecord[]>([]);
   const [popupAlerts, setPopupAlerts] = useState<TradePopupAlert[]>([]);
   const [activePopup, setActivePopup] = useState<TradePopupAlert | null>(null);
   const [selectedTradeModal, setSelectedTradeModal] = useState<ClosedTradeRecord | null>(null);
 
-  const [renderUrlInput, setRenderUrlInput] = useState<string>("");
-  const [renderUrl, setRenderUrl] = useState<string>("");
-  const [feedBadge, setFeedBadge] = useState<string>("CONNECTING TO LIVE FEED...");
+  const [renderUrlInput, setRenderUrlInput] = useState<string>(DEFAULT_RENDER_BACKEND_URL);
+  const [renderUrl, setRenderUrl] = useState<string>(DEFAULT_RENDER_BACKEND_URL);
+  const [feedBadge, setFeedBadge] = useState<string>("CONNECTING TO V9.5 0MS DELTA STREAM...");
   const [lastScanTime, setLastScanTime] = useState<string>("Syncing...");
 
-  const stateRef = useRef({
-    activeEquity,
-    peakEquity,
-    vaultBalance,
-    principalSiphoned,
-    nextMilestone,
-    pyramid,
-    activeCampaigns,
-    tradeHistory,
-    popupAlerts,
-  });
-  stateRef.current = {
-    activeEquity,
-    peakEquity,
-    vaultBalance,
-    principalSiphoned,
-    nextMilestone,
-    pyramid,
-    activeCampaigns,
-    tradeHistory,
-    popupAlerts,
-  };
+  const liveWsMarksRef = useRef<Record<string, number>>({});
+  const liveWsTickTsRef = useRef<Record<string, number>>({});
+  const inFlightPollRef = useRef<boolean>(false);
 
   useEffect(() => {
     try {
@@ -428,7 +291,7 @@ export default function App() {
         typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_API_URL
           ? process.env.NEXT_PUBLIC_API_URL
           : "";
-      const savedUrl = localStorage.getItem(RENDER_URL_KEY) || envUrl || DEFAULT_RENDER_BACKEND_URL || "";
+      const savedUrl = localStorage.getItem(RENDER_URL_KEY) || envUrl || DEFAULT_RENDER_BACKEND_URL;
       if (savedUrl) {
         const cleaned = savedUrl.replace(/\/+$/, "");
         setRenderUrl(cleaned);
@@ -441,12 +304,8 @@ export default function App() {
         if (typeof parsed.activeEquity === "number") setActiveEquity(parsed.activeEquity);
         if (typeof parsed.peakEquity === "number") setPeakEquity(parsed.peakEquity);
         if (typeof parsed.vaultBalance === "number") setVaultBalance(parsed.vaultBalance);
-        if (typeof parsed.principalSiphoned === "boolean") setPrincipalSiphoned(parsed.principalSiphoned);
-        if (typeof parsed.nextMilestone === "number") setNextMilestone(parsed.nextMilestone);
         if (Array.isArray(parsed.activeCampaigns)) setActiveCampaigns(parsed.activeCampaigns);
-        else if (parsed.pyramid) setActiveCampaigns([parsed.pyramid]);
         if (Array.isArray(parsed.tradeHistory)) setTradeHistory(parsed.tradeHistory);
-        if (Array.isArray(parsed.popupAlerts)) setPopupAlerts(parsed.popupAlerts);
       }
     } catch {
       // Ignore storage errors
@@ -463,7 +322,6 @@ export default function App() {
           vaultBalance,
           principalSiphoned,
           nextMilestone,
-          pyramid,
           activeCampaigns,
           tradeHistory,
           popupAlerts,
@@ -472,41 +330,385 @@ export default function App() {
     } catch {
       // Ignore storage errors
     }
-  }, [activeEquity, peakEquity, vaultBalance, principalSiphoned, nextMilestone, pyramid, activeCampaigns, tradeHistory, popupAlerts]);
+  }, [activeEquity, peakEquity, vaultBalance, principalSiphoned, nextMilestone, activeCampaigns, tradeHistory, popupAlerts]);
 
-  const triggerAlertPopup = useCallback(
-    (
-      event_type: TradePopupAlert["event_type"],
-      title: string,
-      message: string,
-      pnl_inr: number = 0,
-      trade_id?: string
-    ) => {
-      const alertObj: TradePopupAlert = {
-        id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        timestamp: new Date().toLocaleTimeString(),
-        event_type,
-        title,
-        message,
-        pnl_inr,
-        trade_id,
+  const applyServerPayload = useCallback((data: any) => {
+    if (!data || typeof data !== "object") return;
+    const nowMs = Date.now();
+
+    if (data.mode) setExecutionMode(String(data.mode));
+    if (typeof data.starting_equity === "number" && data.starting_equity > 0) {
+      setStartingEquity(data.starting_equity);
+    }
+    if (typeof data.realized_base_equity === "number") {
+      setActiveEquity(data.realized_base_equity);
+    } else if (typeof data.active_equity === "number") {
+      setActiveEquity(data.active_equity);
+    }
+    if (typeof data.kelly?.peak_equity === "number") {
+      setPeakEquity(data.kelly.peak_equity);
+    }
+    if (typeof data.vault_balance === "number") setVaultBalance(data.vault_balance);
+    setPrincipalSiphoned(Boolean(data.principal_siphoned));
+    if (typeof data.next_siphon_milestone === "number") setNextMilestone(data.next_siphon_milestone);
+
+    setDeltaConnected(Boolean(data.delta_connected));
+    setDeltaWsConnected(Boolean(data.delta_ws_connected));
+    if (data.delta_last_sync_ts) setDeltaLastSyncTs(String(data.delta_last_sync_ts));
+    if (typeof data.delta_wallet_inr === "number") setDeltaWalletInr(data.delta_wallet_inr);
+    if (typeof data.delta_available_inr === "number") setDeltaAvailableInr(data.delta_available_inr);
+    if (typeof data.delta_position_margin_inr === "number") setDeltaPositionMarginInr(data.delta_position_margin_inr);
+    if (typeof data.delta_wallet_usd === "number") setDeltaWalletUsd(data.delta_wallet_usd);
+    if (Array.isArray(data.delta_fills)) setDeltaFills(data.delta_fills);
+    setDeltaApiError(data.delta_api_error ? String(data.delta_api_error) : null);
+    if (data.server_outbound_ip) setServerOutboundIp(String(data.server_outbound_ip));
+
+    if (Array.isArray(data.scanner) && data.scanner.length > 0) {
+      setScanner((prev) =>
+        prev.map((oldItem) => {
+          const updated = data.scanner.find((x: any) => x.symbol === oldItem.symbol);
+          if (!updated) return oldItem;
+          const wsMark = liveWsMarksRef.current[oldItem.symbol];
+          const wsAge = nowMs - (liveWsTickTsRef.current[oldItem.symbol] || 0);
+          if (wsMark && wsMark > 0 && wsAge < 5000) {
+            return {
+              ...oldItem,
+              ...updated,
+              price: fmtPrice(wsMark),
+              feed_source: "DELTA_WS_0MS",
+            };
+          }
+          return { ...oldItem, ...updated };
+        })
+      );
+    }
+
+    if (Array.isArray(data.delta_open_positions)) {
+      let totalPosPnl = 0;
+      const syncedPositions: DeltaLivePosition[] = data.delta_open_positions.map((pos: DeltaLivePosition) => {
+        const wsMark = liveWsMarksRef.current[pos.symbol] || liveWsMarksRef.current[pos.delta_symbol];
+        const wsAge = nowMs - (liveWsTickTsRef.current[pos.symbol] || 0);
+        const entryRaw = Number(pos.entry_price_raw ?? pos.entry_price ?? 0);
+        const markRaw =
+          wsMark && wsMark > 0 && wsAge < 5000
+            ? wsMark
+            : Number(pos.mark_price_raw ?? pos.mark_price ?? entryRaw);
+
+        const exactPnlInr = computeExactPositionPnlInr(
+          pos.side,
+          entryRaw,
+          markRaw,
+          pos.coin_qty,
+          pos.notional_inr
+        );
+        totalPosPnl += exactPnlInr;
+        return {
+          ...pos,
+          entry_price_raw: entryRaw,
+          mark_price_raw: markRaw,
+          mark_price: fmtPrice(markRaw),
+          unrealized_pnl_inr: exactPnlInr,
+        };
+      });
+      setDeltaOpenPositions(syncedPositions);
+      setDeltaOpenPnlInr(+totalPosPnl.toFixed(2));
+    } else if (typeof data.delta_open_pnl_inr === "number") {
+      setDeltaOpenPnlInr(data.delta_open_pnl_inr);
+    }
+
+    const rawCamps: ActiveCampaign[] = Array.isArray(data.active_campaigns)
+      ? data.active_campaigns
+      : data.pyramid
+      ? [data.pyramid]
+      : [];
+
+    const syncedCamps: ActiveCampaign[] = rawCamps.map((camp) => {
+      const wsMark =
+        liveWsMarksRef.current[camp.symbol] ||
+        (camp.delta_symbol ? liveWsMarksRef.current[camp.delta_symbol] : undefined);
+      const wsAge = nowMs - (liveWsTickTsRef.current[camp.symbol] || 0);
+      const entryRaw = Number(camp.entry_price_raw ?? camp.base_entry_price ?? 0);
+      const markRaw =
+        wsMark && wsMark > 0 && wsAge < 5000
+          ? wsMark
+          : Number(camp.mark_price_raw ?? camp.current_price ?? entryRaw);
+
+      const exactPnlInr = computeExactPositionPnlInr(
+        camp.side,
+        entryRaw,
+        markRaw,
+        camp.coin_qty,
+        camp.total_notional_inr
+      );
+
+      return {
+        ...camp,
+        entry_price_raw: entryRaw,
+        mark_price_raw: markRaw,
+        current_price: fmtPrice(markRaw),
+        total_unrealized_pnl_inr: exactPnlInr,
       };
-      setPopupAlerts((prev) => [alertObj, ...prev.slice(0, 29)]);
-      setActivePopup(alertObj);
-    },
-    []
-  );
+    });
+    setActiveCampaigns(syncedCamps);
 
-  // Derived Real-Time Portfolio & Win Rate Metrics
-  const unrealizedPnl = +activeCampaigns
-    .reduce((acc, c) => acc + c.total_unrealized_pnl_inr + c.tp1_banked_pnl_inr, 0)
+    if (Array.isArray(data.trade_history)) {
+      setTradeHistory(data.trade_history);
+    }
+    setLastScanTime(new Date().toLocaleTimeString());
+  }, []);
+
+  /**
+   * STREAM 1: Direct Browser WebSocket to Delta Exchange India (wss://socket.india.delta.exchange)
+   */
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let active = true;
+
+    const connectDeltaSocket = () => {
+      if (!active || typeof window === "undefined") return;
+      try {
+        ws = new WebSocket("wss://socket.india.delta.exchange");
+        ws.onopen = () => {
+          if (!active || !ws) return;
+          setBrowserDeltaWsLive(true);
+          ws.send(JSON.stringify({ type: "enable_heartbeat" }));
+          ws.send(
+            JSON.stringify({
+              type: "subscribe",
+              payload: {
+                channels: [
+                  {
+                    name: "v2/ticker",
+                    symbols: UNIVERSE_PAIRS.map((p) => p.deltaSymbol),
+                  },
+                ],
+              },
+            })
+          );
+        };
+
+        ws.onmessage = (event) => {
+          if (!active) return;
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg?.type === "v2/ticker" && msg.symbol) {
+              const dSym = String(msg.symbol).toUpperCase();
+              const scannerSym = DELTA_TO_SCANNER_MAP[dSym];
+              const mkPriceRaw = parseFloat(msg.mark_price || msg.close || "0");
+              if (!scannerSym || !mkPriceRaw || isNaN(mkPriceRaw) || mkPriceRaw <= 0) return;
+
+              const nowMs = Date.now();
+              liveWsMarksRef.current[scannerSym] = mkPriceRaw;
+              liveWsMarksRef.current[dSym] = mkPriceRaw;
+              liveWsTickTsRef.current[scannerSym] = nowMs;
+
+              const cleanPrice = fmtPrice(mkPriceRaw);
+
+              setScanner((prev) =>
+                prev.map((item) =>
+                  item.symbol === scannerSym
+                    ? { ...item, price: cleanPrice, feed_source: "DELTA_WS_0MS" }
+                    : item
+                )
+              );
+
+              setActiveCampaigns((prev) => {
+                if (prev.length === 0) return prev;
+                let changed = false;
+                const next = prev.map((camp) => {
+                  if (camp.symbol !== scannerSym && camp.delta_symbol !== dSym) return camp;
+                  changed = true;
+                  const entryRaw = Number(camp.entry_price_raw ?? camp.base_entry_price ?? mkPriceRaw);
+                  const newPnl = computeExactPositionPnlInr(
+                    camp.side,
+                    entryRaw,
+                    mkPriceRaw,
+                    camp.coin_qty,
+                    camp.total_notional_inr
+                  );
+                  return {
+                    ...camp,
+                    mark_price_raw: mkPriceRaw,
+                    current_price: cleanPrice,
+                    total_unrealized_pnl_inr: newPnl,
+                  };
+                });
+                return changed ? next : prev;
+              });
+
+              setDeltaOpenPositions((prev) => {
+                if (prev.length === 0) return prev;
+                let changed = false;
+                let sumUpnl = 0;
+                const next = prev.map((pos) => {
+                  if (pos.symbol !== scannerSym && pos.delta_symbol !== dSym) {
+                    sumUpnl += pos.unrealized_pnl_inr;
+                    return pos;
+                  }
+                  changed = true;
+                  const entryRaw = Number(pos.entry_price_raw ?? pos.entry_price ?? mkPriceRaw);
+                  const upnlInr = computeExactPositionPnlInr(
+                    pos.side,
+                    entryRaw,
+                    mkPriceRaw,
+                    pos.coin_qty,
+                    pos.notional_inr
+                  );
+                  sumUpnl += upnlInr;
+                  return {
+                    ...pos,
+                    mark_price_raw: mkPriceRaw,
+                    mark_price: cleanPrice,
+                    unrealized_pnl_inr: upnlInr,
+                  };
+                });
+                if (changed) {
+                  setDeltaOpenPnlInr(+sumUpnl.toFixed(2));
+                  return next;
+                }
+                return prev;
+              });
+            }
+          } catch {
+            // Ignore malformed socket frames
+          }
+        };
+
+        ws.onclose = () => {
+          setBrowserDeltaWsLive(false);
+          if (active) {
+            reconnectTimer = setTimeout(connectDeltaSocket, 1000);
+          }
+        };
+
+        ws.onerror = () => {
+          try {
+            ws?.close();
+          } catch {
+            // Ignore
+          }
+        };
+      } catch {
+        if (active) {
+          reconnectTimer = setTimeout(connectDeltaSocket, 1500);
+        }
+      }
+    };
+
+    connectDeltaSocket();
+    return () => {
+      active = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try {
+        ws?.close();
+      } catch {
+        // Ignore
+      }
+    };
+  }, []);
+
+  /**
+   * STREAM 2: Direct WebSocket to Render Backend (/ws)
+   */
+  useEffect(() => {
+    if (!renderUrl || typeof window === "undefined") return;
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let active = true;
+
+    const connectBackendWs = () => {
+      if (!active) return;
+      try {
+        const wsEndpoint = renderUrl.replace(/^http/i, "ws") + "/ws";
+        ws = new WebSocket(wsEndpoint);
+        ws.onopen = () => {
+          if (!active) return;
+          setBackendWsLive(true);
+          setFeedBadge("V9.5 FEE-SHIELD 0MS WEBSOCKET SYNCED");
+        };
+        ws.onmessage = (event) => {
+          if (!active) return;
+          try {
+            const data = JSON.parse(event.data);
+            applyServerPayload(data);
+          } catch {
+            // Ignore
+          }
+        };
+        ws.onclose = () => {
+          setBackendWsLive(false);
+          if (active) {
+            reconnectTimer = setTimeout(connectBackendWs, 1000);
+          }
+        };
+        ws.onerror = () => {
+          try {
+            ws?.close();
+          } catch {
+            // Ignore
+          }
+        };
+      } catch {
+        if (active) {
+          reconnectTimer = setTimeout(connectBackendWs, 1500);
+        }
+      }
+    };
+
+    connectBackendWs();
+    return () => {
+      active = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      try {
+        ws?.close();
+      } catch {
+        // Ignore
+      }
+    };
+  }, [renderUrl, applyServerPayload]);
+
+  const handleForceSyncDelta = useCallback(async () => {
+    if (!renderUrl) return;
+    setIsSyncingDelta(true);
+    try {
+      const res = await fetch(`${renderUrl}/api/sync-delta`, {
+        method: "POST",
+        cache: "no-store",
+      });
+      if (res.ok) {
+        const data = await res.json();
+        applyServerPayload(data);
+        setFeedBadge(
+          data.delta_connected
+            ? `DELTA INDIA V9.5 0MS LIVE (${data.mode || "LIVE"})`
+            : "RENDER 24/7 CLOUD DAEMON SYNCED"
+        );
+      }
+    } catch {
+      // Ignore
+    } finally {
+      setIsSyncingDelta(false);
+    }
+  }, [renderUrl, applyServerPayload]);
+
+  const campaignUnrealized = +activeCampaigns
+    .reduce((acc, c) => acc + (c.total_unrealized_pnl_inr || 0) + (c.tp1_banked_pnl_inr || 0), 0)
     .toFixed(2);
-  const liveActiveEquity = +(activeEquity + unrealizedPnl).toFixed(2);
-  const currentPeak = Math.max(peakEquity, liveActiveEquity, 10000);
-  const protectedFloor = +(Math.max(10000, 0.75 * currentPeak)).toFixed(2);
+  const unrealizedPnl =
+    activeCampaigns.length > 0
+      ? campaignUnrealized
+      : deltaOpenPositions.length > 0 && deltaOpenPnlInr !== null
+      ? deltaOpenPnlInr
+      : 0.0;
+  const baseWalletEquity =
+    deltaConnected && deltaWalletInr !== null && deltaWalletInr > 0 ? deltaWalletInr : activeEquity;
+  const liveActiveEquity = +(baseWalletEquity + unrealizedPnl).toFixed(2);
+  const currentPeak = Math.max(peakEquity, liveActiveEquity, startingEquity);
+  const protectedFloor = +(Math.max(startingEquity, 0.75 * currentPeak)).toFixed(2);
   const totalNetWorth = +(liveActiveEquity + vaultBalance).toFixed(2);
-  const totalReturnInr = +(totalNetWorth - 10000).toFixed(2);
-  const totalReturnPct = +(((totalNetWorth - 10000) / 10000) * 100).toFixed(2);
+  const totalReturnInr = +(totalNetWorth - startingEquity).toFixed(2);
+  const totalReturnPct = +(((totalNetWorth - startingEquity) / Math.max(startingEquity, 1)) * 100).toFixed(2);
 
   const totalClosed = tradeHistory.length;
   const winsCount = tradeHistory.filter((t) => t.realized_pnl_inr > 0).length;
@@ -522,503 +724,47 @@ export default function App() {
     .toFixed(2);
   const netRealizedPnl = +(grossProfit - grossLoss).toFixed(2);
 
-  // 100% Pure Account Compounding (No automatic Vault Siphon — 100% of profit compounds into next trade size)
-  useEffect(() => {
-    if (liveActiveEquity > peakEquity) {
-      setPeakEquity(liveActiveEquity);
-    }
-  }, [liveActiveEquity, peakEquity]);
-
-  // Close Active Campaign Helper (V9 5-Stage Asymmetric Ratchet + -1.20% Capped Loss)
-  const closeActiveTrade = useCallback(
-    (camp: ActiveCampaign, exitPrice: number, reason: string) => {
-      const side = camp.side;
-      const direction = side === "LONG" ? 1.0 : -1.0;
-      const totalNotional = camp.total_notional_inr;
-      const entryP = camp.base_entry_price;
-      const pctMove = direction * ((exitPrice - entryP) / Math.max(entryP, 1e-12));
-      const prevEqVal = stateRef.current.activeEquity;
-      const totalFees = totalNotional * 0.0005 * 2.0;
-      const rawPnl = totalNotional * pctMove - totalFees;
-
-      let realizedPnl = 0;
-      if (reason === "STAGE_4_HOME_RUN_JACKPOT_WIN") {
-        realizedPnl = +Math.max(prevEqVal * 0.086, rawPnl).toFixed(2);
-      } else if (camp.max_stage_reached === "STAGE_3_SUPER_TRAIL") {
-        realizedPnl = +Math.max(prevEqVal * 0.0565, rawPnl).toFixed(2);
-      } else if (camp.tp1_hit || camp.max_stage_reached === "STAGE_2_50PCT_BANKED") {
-        const runnerNotional = totalNotional * 0.50;
-        const runnerPnl = runnerNotional * pctMove - runnerNotional * 0.0005 * 2.0;
-        realizedPnl = +Math.max(prevEqVal * 0.0345, camp.tp1_banked_pnl_inr + runnerPnl, rawPnl).toFixed(2);
-      } else if (camp.max_stage_reached === "STAGE_1_PROFIT_LOCKED") {
-        realizedPnl = +Math.max(prevEqVal * 0.0150, rawPnl).toFixed(2);
-      } else if (camp.max_stage_reached === "ZERO_LOSS_SHIELD_LOCKED") {
-        realizedPnl = +Math.max(prevEqVal * 0.0042, rawPnl).toFixed(2);
-      } else if (reason === "TIME_DECAY_SCRATCH_WIN") {
-        realizedPnl = +Math.max(prevEqVal * 0.0080, rawPnl).toFixed(2);
-      } else {
-        realizedPnl = +rawPnl.toFixed(2);
-      }
-
-      const newEq = +(prevEqVal + realizedPnl).toFixed(2);
-      const roiPct = +((realizedPnl / Math.max(prevEqVal, 1)) * 100).toFixed(2);
-
-      const record: ClosedTradeRecord = {
-        trade_id: camp.trade_id,
-        symbol: camp.symbol,
-        side: camp.side,
-        setup_type: camp.setup_type,
-        confluence_score: camp.confluence_score,
-        entry_time: camp.entry_time,
-        exit_time: new Date().toLocaleString(),
-        entry_price: fmtPrice(entryP),
-        exit_price: fmtPrice(exitPrice),
-        max_stage_reached: camp.max_stage_reached,
-        filled_units: 1,
-        total_notional_inr: +totalNotional.toFixed(2),
-        realized_pnl_inr: realizedPnl,
-        roi_pct: roiPct,
-        exit_reason: reason,
-        balance_after_inr: newEq,
-        outcome: realizedPnl > 0 ? "WIN" : "LOSS",
-      };
-
-      setActiveEquity(newEq);
-      setActiveCampaigns((prev) => prev.filter((c) => c.trade_id !== camp.trade_id));
-      setTradeHistory((prev) => [record, ...prev]);
-
-      const sign = realizedPnl >= 0 ? "+" : "";
-      triggerAlertPopup(
-        "TRADE_EXIT",
-        `${realizedPnl >= 0 ? "🏆 TRADE CLOSED IN PROFIT" : "🛑 TRADE STOPPED OUT"}: ${camp.symbol}`,
-        `${camp.side} exited @ $${exitPrice} (${reason}) | Net PnL: ${sign}₹${realizedPnl.toLocaleString("en-IN")} (${sign}${roiPct}%)`,
-        realizedPnl,
-        record.trade_id
-      );
-    },
-    [triggerAlertPopup]
-  );
-
-  // Enter High-Probability OMEGA-QUANT V9 Full-Core Campaign (100% Core Size — ZERO Adding to Losers!)
-  const enterNewTrade = useCallback(
-    (sig: AssetSignal) => {
-      const curEq = stateRef.current.activeEquity;
-      const lev = sig.confluence_score >= 98 ? 7.20 : 6.50;
-      const totalNotional = +(curEq * lev).toFixed(2);
-
-      const side: "LONG" | "SHORT" = sig.regime === "SHORT_IGNITION" ? "SHORT" : "LONG";
-      const direction = side === "LONG" ? 1.0 : -1.0;
-      const entryPrice = fmtPrice(sig.price);
-      const atr = Math.max(sig.atr_14, entryPrice * 0.0065);
-      const isTier1 = ["SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT"].includes(sig.symbol);
-      const stopDist = isTier1 ? 0.0040 : 0.0048;
-
-      const tp1Price = fmtPrice(entryPrice * (1.0 + direction * 0.0068));
-      const initialStop = fmtPrice(entryPrice * (1.0 - direction * stopDist));
-      const entryFee = +(totalNotional * 0.0005).toFixed(2);
-
-      const tranches: TrancheUnit[] = [
-        {
-          id: 1,
-          label: `FULL_CORE_100PCT (${lev}X COMPOUNDING SNIPER)`,
-          weight_pct: 1.0,
-          trigger_atr_mult: 0.0,
-          trigger_price: entryPrice,
-          filled: true,
-          fill_price: entryPrice,
-          notional_inr: totalNotional,
-          unrealized_pnl_inr: -entryFee,
-          fee_inr: entryFee,
-        },
-      ];
-
-      const tradeId = `TRD-${Date.now().toString().slice(-9)}`;
-      const newCamp: ActiveCampaign = {
-        trade_id: tradeId,
-        symbol: sig.symbol,
-        side,
-        setup_type: sig.setup_type,
-        confluence_score: sig.confluence_score,
-        entry_time: new Date().toISOString(),
-        base_entry_price: entryPrice,
-        current_price: entryPrice,
-        highest_extreme: entryPrice,
-        atr_at_entry: atr,
-        tp1_price: tp1Price,
-        tp1_hit: false,
-        tp1_banked_pnl_inr: 0,
-        chandelier_stop: initialStop,
-        breakeven_locked: false,
-        breakeven_stop: null,
-        effective_stop: initialStop,
-        filled_units: 1,
-        max_stage_reached: "V9_SNIPER_OPEN",
-        total_notional_inr: totalNotional,
-        total_unrealized_pnl_inr: -entryFee,
-        rvol_at_entry: sig.rvol,
-        tranches,
-      };
-
-      setActiveCampaigns((prev) => (prev.length < 3 ? [...prev, newCamp] : prev));
-      triggerAlertPopup(
-        "TRADE_ENTRY",
-        `🟢 V9 ENTERED ${side} (${sig.confluence_score}/100): ${sig.symbol}`,
-        `Setup: ${sig.setup_type} @ $${entryPrice} | Stage-2 Bank: $${tp1Price} | Stop: $${initialStop}`,
-        0,
-        tradeId
-      );
-    },
-    [triggerAlertPopup]
-  );
-
-  // Evaluate Open V9 Campaign on Every Real Market Price Update (5-Stage Asymmetric Ratchet)
-  const evaluateOpenCampaignOnTick = useCallback(
-    (camp: ActiveCampaign, livePrice: number) => {
-      const side = camp.side;
-      const direction = side === "LONG" ? 1.0 : -1.0;
-      const entryP = camp.base_entry_price;
-      const notional = camp.total_notional_inr;
-
-      const updated: ActiveCampaign = {
-        ...camp,
-        current_price: fmtPrice(livePrice),
-        tranches: camp.tranches.map((t) => ({ ...t })),
-      };
-
-      if (
-        (side === "LONG" && livePrice > updated.highest_extreme) ||
-        (side === "SHORT" && livePrice < updated.highest_extreme)
-      ) {
-        updated.highest_extreme = fmtPrice(livePrice);
-      }
-
-      const maxFavPct = direction * ((updated.highest_extreme - entryP) / Math.max(entryP, 1e-12));
-
-      // Stage 0.5 Zero-Loss Shield (+0.25% move): Locks Stop at Entry + 0.08% (+0.42% win, 0.17% breathing room)
-      if (maxFavPct >= 0.0025 && updated.max_stage_reached === "V9_SNIPER_OPEN") {
-        updated.breakeven_locked = true;
-        updated.breakeven_stop = fmtPrice(entryP * (1.0 + direction * 0.0008));
-        updated.effective_stop = updated.breakeven_stop;
-        updated.max_stage_reached = "ZERO_LOSS_SHIELD_LOCKED";
-      }
-
-      // Stage 1 (+0.42% move): Locks Stop at Entry + 0.24% (+1.50% win = +₹150, 0.18% breathing room)
-      if (
-        maxFavPct >= 0.0042 &&
-        (updated.max_stage_reached === "V9_SNIPER_OPEN" || updated.max_stage_reached === "ZERO_LOSS_SHIELD_LOCKED")
-      ) {
-        updated.breakeven_locked = true;
-        updated.breakeven_stop = fmtPrice(entryP * (1.0 + direction * 0.0024));
-        updated.effective_stop = updated.breakeven_stop;
-        updated.max_stage_reached = "STAGE_1_PROFIT_LOCKED";
-      }
-
-      // Stage 2 (+0.68% move): Banks 50% in cash & locks 50% Runner Stop at Entry + 0.46% (+3.45% win = +₹345+)
-      if (maxFavPct >= 0.0068 && !updated.tp1_hit) {
-        updated.tp1_hit = true;
-        updated.breakeven_locked = true;
-        updated.breakeven_stop = fmtPrice(entryP * (1.0 + direction * 0.0046));
-        updated.effective_stop = updated.breakeven_stop;
-        updated.max_stage_reached = "STAGE_2_50PCT_BANKED";
-        const halfN = notional * 0.50;
-        updated.tp1_banked_pnl_inr = +(halfN * 0.0068 - halfN * 0.0005 * 2.0).toFixed(2);
-      }
-
-      // Stage 3 (+1.05% move): Locks Stop at Entry + 0.82% (+5.65% win = +₹565+) & trails 0.22% behind peak
-      if (maxFavPct >= 0.0105) {
-        updated.tp1_hit = true;
-        updated.breakeven_locked = true;
-        const trailS = fmtPrice(updated.highest_extreme * (1.0 - direction * 0.0022));
-        const floorS = fmtPrice(entryP * (1.0 + direction * 0.0082));
-        updated.breakeven_stop = side === "LONG" ? Math.max(trailS, floorS) : Math.min(trailS, floorS);
-        updated.effective_stop = updated.breakeven_stop;
-        updated.max_stage_reached = "STAGE_3_SUPER_TRAIL";
-      }
-
-      // Stage 4 (+1.60% move): Home-Run Jackpot Target (+8.60%+ win)
-      const tp2Price = fmtPrice(entryP * (1.0 + direction * 0.0160));
-      if ((side === "LONG" && livePrice >= tp2Price) || (side === "SHORT" && livePrice <= tp2Price)) {
-        closeActiveTrade(updated, livePrice, "STAGE_4_HOME_RUN_JACKPOT_WIN");
-        return;
-      }
-
-      // 25-Minute Time-Decay Scratch Profit Exit
-      const ageMs = Date.now() - new Date(updated.entry_time).getTime();
-      if (!updated.tp1_hit && updated.max_stage_reached !== "STAGE_1_PROFIT_LOCKED" && ageMs >= 25 * 60 * 1000) {
-        const scratchTarget = fmtPrice(entryP * (1 + direction * 0.0014));
-        if ((side === "LONG" && livePrice >= scratchTarget) || (side === "SHORT" && livePrice <= scratchTarget)) {
-          closeActiveTrade(updated, livePrice, "TIME_DECAY_SCRATCH_WIN");
-          return;
-        }
-      }
-
-      // Check Stop / Ratchet Hit
-      const stopHit =
-        (side === "LONG" && livePrice <= updated.effective_stop) ||
-        (side === "SHORT" && livePrice >= updated.effective_stop);
-
-      if (stopHit) {
-        const reason =
-          updated.max_stage_reached === "STAGE_3_SUPER_TRAIL"
-            ? "STAGE_3_ASYMMETRIC_RATCHET_WIN"
-            : updated.tp1_hit
-            ? "STAGE_2_ASYMMETRIC_RATCHET_WIN"
-            : updated.max_stage_reached === "STAGE_1_PROFIT_LOCKED"
-            ? "STAGE_1_ASYMMETRIC_RATCHET_WIN"
-            : updated.max_stage_reached === "ZERO_LOSS_SHIELD_LOCKED"
-            ? "STAGE_0.5_ZERO_LOSS_SHIELD_WIN"
-            : "TIGHT_1.20PCT_CAPPED_STOP";
-        closeActiveTrade(updated, livePrice, reason);
-        return;
-      }
-
-      // Update Live Open PnL
-      const pctMove = direction * ((livePrice - entryP) / Math.max(entryP, 1e-12));
-      if (updated.tp1_hit) {
-        const runnerN = notional * 0.50;
-        const runnerPnl = +(runnerN * pctMove - runnerN * 0.0005).toFixed(2);
-        updated.tranches[0].unrealized_pnl_inr = +(updated.tp1_banked_pnl_inr + runnerPnl).toFixed(2);
-        updated.total_unrealized_pnl_inr = runnerPnl;
-      } else {
-        const pnl = +(notional * pctMove - notional * 0.0005).toFixed(2);
-        updated.tranches[0].unrealized_pnl_inr = pnl;
-        updated.total_unrealized_pnl_inr = pnl;
-      }
-
-      setActiveCampaigns((prev) => prev.map((c) => (c.trade_id === updated.trade_id ? updated : c)));
-    },
-    [closeActiveTrade]
-  );
-
   /**
-   * MULTI-EXCHANGE REAL-TIME KLINE FETCHER (Zero ISP Blocking in India or Globally)
-   * Tries in order:
-   * 1. Bybit V5 Public 5m Klines (https://api.bybit.com/v5/market/kline — Works globally & in India, matches TradingView USDT Perps)
-   * 2. OKX V5 Public 5m Candles (https://www.okx.com/api/v5/market/candles — Works globally)
-   * 3. Binance Vision Public 5m Klines (https://data-api.binance.vision/api/v3/klines)
-   * 4. Kraken Public OHLC (https://api.kraken.com/0/public/OHLC — Never blocked on any Indian ISP)
+   * STREAM 3: Non-Overlapping 500ms Fast Poll with AbortController & WS Mark Authority
    */
-  const fetchPairKlinesMultiExchange = useCallback(
-    async (pair: (typeof UNIVERSE_PAIRS)[0]): Promise<{ klines: number[][]; source: string } | null> => {
-      // 1. Try Bybit V5 Public API (5m candles)
-      try {
-        const res = await fetch(
-          `https://api.bybit.com/v5/market/kline?category=spot&symbol=${pair.ticker}&interval=5&limit=100`,
-          { cache: "no-store" }
-        );
-        if (res.ok) {
-          const json = await res.json();
-          const list = json?.result?.list;
-          if (Array.isArray(list) && list.length >= 30) {
-            // Bybit returns newest first, reverse to chronological
-            const chronological = list
-              .slice()
-              .reverse()
-              .map((k: string[]) => [
-                parseFloat(k[0]),
-                parseFloat(k[1]),
-                parseFloat(k[2]),
-                parseFloat(k[3]),
-                parseFloat(k[4]),
-                parseFloat(k[5]),
-              ]);
-            return { klines: chronological, source: "BYBIT_LIVE_5M" };
-          }
-        }
-      } catch {
-        // Fallback to next exchange
-      }
-
-      // 2. Try Binance Vision CDN (5m candles)
-      try {
-        const res = await fetch(
-          `https://data-api.binance.vision/api/v3/klines?symbol=${pair.ticker}&interval=5m&limit=100`,
-          { cache: "no-store" }
-        );
-        if (res.ok) {
-          const raw: any[] = await res.json();
-          if (Array.isArray(raw) && raw.length >= 30) {
-            const klines = raw.map((k) => [
-              parseFloat(k[0]),
-              parseFloat(k[1]),
-              parseFloat(k[2]),
-              parseFloat(k[3]),
-              parseFloat(k[4]),
-              parseFloat(k[5]),
-            ]);
-            return { klines, source: "BINANCE_LIVE_5M" };
-          }
-        }
-      } catch {
-        // Fallback to next exchange
-      }
-
-      // 3. Try Kraken Public 5m OHLC (100% unblocked on all Indian ISPs: Jio, Airtel, ACT)
-      try {
-        const res = await fetch(
-          `https://api.kraken.com/0/public/OHLC?pair=${pair.krakenPair}&interval=5`,
-          { cache: "no-store" }
-        );
-        if (res.ok) {
-          const json = await res.json();
-          const resultObj = json?.result || {};
-          const key = Object.keys(resultObj).find((k) => k !== "last");
-          if (key && Array.isArray(resultObj[key]) && resultObj[key].length >= 30) {
-            const rows = resultObj[key].slice(-100);
-            const klines = rows.map((r: any[]) => [
-              parseFloat(r[0]) * 1000,
-              parseFloat(r[1]),
-              parseFloat(r[2]),
-              parseFloat(r[3]),
-              parseFloat(r[4]),
-              parseFloat(r[6]),
-            ]);
-            return { klines, source: "KRAKEN_LIVE_5M" };
-          }
-        }
-      } catch {
-        // Fallback
-      }
-
-      return null;
-    },
-    []
-  );
-
-  // Parallel High-Speed 24/7 Market Scanner Loop
   useEffect(() => {
     let active = true;
 
     const runScan = async () => {
-      // 1. If user linked a Render 24/7 backend URL, check it first
-      if (renderUrl) {
-        try {
-          const apiEndpoint = [renderUrl, "api", "state"].join("/");
-          const res = await fetch(apiEndpoint, { cache: "no-store" });
-          if (res.ok && active) {
-            const data = await res.json();
-            if (Array.isArray(data.scanner) && data.scanner.length > 0) {
-              setFeedBadge("RENDER 24/7 CLOUD DAEMON SYNCED");
-              // Loophole Fix 5: If Render container restarted (0 closed trades on server) while browser has saved trades, auto-restore to Render!
-              if ((data.total_closed_trades ?? 0) === 0 && stateRef.current.tradeHistory.length > 0) {
-                const restoreUrl = [renderUrl, "api", "restore-state"].join("/");
-                const localWins = stateRef.current.tradeHistory.filter((t) => t.realized_pnl_inr > 0);
-                const localLosses = stateRef.current.tradeHistory.filter((t) => t.realized_pnl_inr <= 0);
-                await fetch(restoreUrl, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    active_equity: stateRef.current.activeEquity,
-                    peak_equity: stateRef.current.peakEquity,
-                    vault_balance: stateRef.current.vaultBalance,
-                    wins: localWins.length,
-                    losses: localLosses.length,
-                    total_closed_trades: stateRef.current.tradeHistory.length,
-                    gross_profit_inr: localWins.reduce((a, b) => a + b.realized_pnl_inr, 0),
-                    gross_loss_inr: localLosses.reduce((a, b) => a + Math.abs(b.realized_pnl_inr), 0),
-                    trade_history: stateRef.current.tradeHistory,
-                  }),
-                });
-                return;
-              }
-              setActiveEquity(data.realized_base_equity ?? data.active_equity ?? 10000);
-              setPeakEquity(data.kelly?.peak_equity ?? 10000);
-              setVaultBalance(data.vault_balance ?? 0);
-              setPrincipalSiphoned(Boolean(data.principal_siphoned));
-              setNextMilestone(data.next_siphon_milestone ?? 20000);
-              setScanner(data.scanner);
-              if (Array.isArray(data.active_campaigns)) setActiveCampaigns(data.active_campaigns);
-              else setActiveCampaigns(data.pyramid ? [data.pyramid] : []);
-              if (Array.isArray(data.trade_history)) setTradeHistory(data.trade_history);
-              setLastScanTime(new Date().toLocaleTimeString());
-              return;
-            }
-          }
-        } catch {
-          // Automatically fall back to multi-exchange parallel browser fetch
-        }
-      }
-
-      // 2. Fetch all 10 pairs in parallel via Promise.all across Bybit / Binance Vision / Kraken
-      const results = await Promise.all(
-        UNIVERSE_PAIRS.map(async (pair) => {
-          const fetched = await fetchPairKlinesMultiExchange(pair);
-          if (fetched) {
-            return evaluateQuantV4(pair, fetched.klines, fetched.source);
-          }
-          return null;
-        })
-      );
-
-      if (!active) return;
-
-      const liveSignals = results.filter((r): r is AssetSignal => r !== null);
-      if (liveSignals.length > 0) {
-        setScanner((prev) =>
-          prev.map((oldItem) => {
-            const updated = liveSignals.find((x) => x.symbol === oldItem.symbol);
-            return updated || oldItem;
-          })
-        );
-        setFeedBadge(`LIVE ${liveSignals[0].feed_source} (${liveSignals.length}/10 PAIRS)`);
-        setLastScanTime(new Date().toLocaleTimeString());
-
-        // 1. Update all currently open trade slots (up to 3 simultaneous positions)
-        const openCamps = stateRef.current.activeCampaigns;
-        openCamps.forEach((camp) => {
-          const match = liveSignals.find((s) => s.symbol === camp.symbol);
-          if (match) {
-            evaluateOpenCampaignOnTick(camp, match.price);
-          }
+      if (inFlightPollRef.current || !renderUrl) return;
+      inFlightPollRef.current = true;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      try {
+        const apiEndpoint = [renderUrl, "api", "state"].join("/");
+        const res = await fetch(apiEndpoint, {
+          cache: "no-store",
+          signal: controller.signal,
         });
-
-        // 2. Check if we can open a new slot (Max 3 simultaneous slots + Correlation Guard)
-        if (openCamps.length < 3) {
-          const openSymbols = new Set(openCamps.map((c) => c.symbol));
-          // Tiered score requirement: Slot 1 >= 82, Slot 2 >= 85, Slot 3 >= 88
-          const minScoreForNextSlot = 96;
-
-          const btcSignal = liveSignals.find((x) => x.ticker === "BTCUSDT");
-          const btcDumping = btcSignal ? btcSignal.roc5 < -0.0035 : false;
-          const btcPumping = btcSignal ? btcSignal.roc5 > 0.0035 : false;
-
-          const candidates = liveSignals.filter((s) => {
-            if (!s.signal_valid || openSymbols.has(s.symbol) || s.confluence_score < minScoreForNextSlot) {
-              return false;
-            }
-            const candSide = s.regime === "SHORT_IGNITION" ? "SHORT" : "LONG";
-            // BTC Cross-Asset Master Shield: Never buy altcoin dips while BTC is dumping, never short while BTC is pumping
-            if (candSide === "LONG" && btcDumping) return false;
-            if (candSide === "SHORT" && btcPumping) return false;
-            // Count how many existing open trades in the SAME direction are still at risk (haven't locked TP1 yet)
-            const unhedgedSameSide = openCamps.filter((c) => c.side === candSide && !c.tp1_hit).length;
-            // Max 2 unhedged trades in the same direction (3rd same-direction slot unlocks once an open trade hits TP1!)
-            return unhedgedSameSide < 2;
-          });
-
-          if (candidates.length > 0) {
-            const bestSetup = candidates.reduce((best, cur) =>
-              cur.confluence_score > best.confluence_score ||
-              (cur.confluence_score === best.confluence_score && cur.rvol > best.rvol)
-                ? cur
-                : best
-            );
-            enterNewTrade(bestSetup);
-          }
+        if (res.ok && active) {
+          const data = await res.json();
+          applyServerPayload(data);
+          setFeedBadge(
+            data.delta_connected
+              ? `DELTA INDIA V9.5 0MS LIVE (${backendWsLive || browserDeltaWsLive ? "WS + 500ms" : "500ms FAST"})`
+              : `RENDER 24/7 CLOUD DAEMON (${data.mode || "LIVE"})`
+          );
         }
-      } else {
-        setFeedBadge("SANDBOX PREVIEW MODE (DEPLOY TO VERCEL FOR LIVE STREAM)");
-        setLastScanTime(new Date().toLocaleTimeString());
+      } catch {
+        // Ignore transient poll timeout; WebSocket stream remains live at 0ms
+      } finally {
+        clearTimeout(timeoutId);
+        inFlightPollRef.current = false;
       }
     };
 
     runScan();
-    const timer = setInterval(runScan, 1500);
+    const timer = setInterval(runScan, 500);
     return () => {
       active = false;
       clearInterval(timer);
     };
-  }, [renderUrl, fetchPairKlinesMultiExchange, enterNewTrade, evaluateOpenCampaignOnTick]);
+  }, [renderUrl, backendWsLive, browserDeltaWsLive, applyServerPayload]);
 
   const filteredTrades = tradeHistory.filter((t) => {
     if (tradeFilter === "WIN") return t.outcome === "WIN";
@@ -1036,12 +782,34 @@ export default function App() {
     }
   };
 
-  const handleResetPaperAccount = () => {
-    setActiveEquity(10000.0);
-    setPeakEquity(10000.0);
-    setVaultBalance(0.0);
-    setPrincipalSiphoned(false);
-    setNextMilestone(20000.0);
+  const handleEmergencyFlattenAll = async () => {
+    if (renderUrl) {
+      try {
+        const res = await fetch(`${renderUrl}/api/kill-switch`, { method: "POST" });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.telemetry) applyServerPayload(json.telemetry);
+          return;
+        }
+      } catch {
+        // Fallback
+      }
+    }
+    setActiveCampaigns([]);
+  };
+
+  const handleResetPaperAccount = async () => {
+    if (renderUrl) {
+      try {
+        const res = await fetch(`${renderUrl}/api/reset`, { method: "POST" });
+        if (res.ok) {
+          const json = await res.json();
+          if (json.telemetry) applyServerPayload(json.telemetry);
+        }
+      } catch {
+        // Ignore
+      }
+    }
     setActiveCampaigns([]);
     setTradeHistory([]);
     setPopupAlerts([]);
@@ -1050,7 +818,6 @@ export default function App() {
 
   return (
     <main className="min-h-screen bg-[#0B0F12] text-slate-200 p-4 space-y-4 font-mono tabular-nums">
-      {/* LIVE POP-UP NOTIFICATION BANNER FOR TRADE ENTRY / EXIT */}
       {activePopup && (
         <div className="fixed top-4 right-4 z-50 max-w-md w-full bg-[#11161B] border-2 border-[#97CEB4] shadow-2xl p-4 space-y-2">
           <div className="flex items-center justify-between">
@@ -1066,33 +833,17 @@ export default function App() {
             </button>
           </div>
           <p className="text-xs text-slate-200 leading-relaxed">{activePopup.message}</p>
-          <div className="flex items-center justify-between pt-2 border-t border-[#1C242D] text-[11px]">
-            <span className="text-slate-400">{activePopup.timestamp}</span>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab("trades");
-                if (activePopup.trade_id) {
-                  const found = tradeHistory.find((t) => t.trade_id === activePopup.trade_id);
-                  if (found) setSelectedTradeModal(found);
-                }
-                setActivePopup(null);
-              }}
-              className="text-[#97CEB4] font-bold underline hover:text-white"
-            >
-              View Trade in Entry/Exit Tab →
-            </button>
-          </div>
         </div>
       )}
 
-      {/* TRADE RECEIPT MODAL */}
       {selectedTradeModal && (
         <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4">
           <div className="bg-[#11161B] border border-[#97CEB4] max-w-lg w-full p-5 space-y-4">
             <div className="flex items-center justify-between border-b border-[#1C242D] pb-3">
               <div>
-                <span className="text-xs text-slate-400 block">OFFICIAL PAPER TRADE RECEIPT</span>
+                <span className="text-xs text-[#97CEB4] block">
+                  {selectedTradeModal.is_live_delta ? "OFFICIAL DELTA EXCHANGE LIVE TRADE RECEIPT" : "OFFICIAL V9.5 TRADE RECEIPT"}
+                </span>
                 <h3 className="text-sm font-bold text-white">
                   {selectedTradeModal.trade_id} // {selectedTradeModal.symbol} ({selectedTradeModal.side})
                 </h3>
@@ -1126,7 +877,7 @@ export default function App() {
               <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
                 <span className="text-[10px] text-slate-400 block">SETUP &amp; CONFLUENCE SCORE</span>
                 <strong className="text-[#97CEB4]">
-                  {selectedTradeModal.setup_type || "QUANT_V4"} ({selectedTradeModal.confluence_score || 82}/100)
+                  {selectedTradeModal.setup_type || "DUAL_CORE_V95"} ({selectedTradeModal.confluence_score || 98}/100)
                 </strong>
               </div>
               <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
@@ -1134,7 +885,7 @@ export default function App() {
                 <strong className="text-amber-300">{selectedTradeModal.exit_reason}</strong>
               </div>
               <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
-                <span className="text-[10px] text-slate-400 block">NET PROFIT / LOSS</span>
+                <span className="text-[10px] text-slate-400 block">NET PROFIT / LOSS (AFTER 18% GST)</span>
                 <strong
                   className={
                     selectedTradeModal.realized_pnl_inr >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"
@@ -1163,55 +914,101 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="w-2.5 h-2.5 rounded-full bg-[#97CEB4] animate-pulse" />
             <h1 className="text-sm sm:text-base font-bold tracking-widest text-white">
-              APEX-OMEGA V10 LIVE // ZERO-LAG DELTA EXCHANGE INDIA HYPER-COMPOUNDER
+              APEX-OMEGA V9.5 // FEE-SHIELD &amp; 90S WICK-GUARD LIVE DELTA ENGINE
             </h1>
             <span className="px-2 py-0.5 text-[10px] bg-[#97CEB4]/15 border border-[#97CEB4]/40 text-[#97CEB4]">
               {feedBadge}
             </span>
+            <span
+              className={`px-2 py-0.5 text-[10px] font-bold border ${
+                deltaConnected
+                  ? "bg-emerald-500/15 border-emerald-400 text-emerald-300"
+                  : "bg-amber-500/15 border-amber-400 text-amber-300"
+              }`}
+            >
+              {deltaConnected
+                ? `DELTA WALLET SYNCED (₹${(deltaWalletInr ?? baseWalletEquity).toLocaleString("en-IN")})`
+                : deltaApiError
+                ? `DELTA API: ${deltaApiError.slice(0, 48)}`
+                : `MODE: ${executionMode}`}
+            </span>
+            {(browserDeltaWsLive || deltaWsConnected || backendWsLive) && (
+              <span className="px-2 py-0.5 text-[10px] bg-emerald-500/10 border border-emerald-400/40 text-emerald-300">
+                ⚡ 0ms MARK-PRICE LOCKED
+              </span>
+            )}
           </div>
-          <div className="text-[11px] text-slate-400 flex items-center gap-3">
+          <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={handleForceSyncDelta}
+              disabled={isSyncingDelta}
+              className="px-2.5 py-1 text-[10px] font-bold bg-[#97CEB4] text-[#0B0F12] hover:bg-[#b0e2ca] disabled:opacity-50"
+            >
+              {isSyncingDelta ? "SYNCING DELTA..." : "🔄 INSTANT DELTA SYNC"}
+            </button>
             <span>LAST TICK: <strong className="text-slate-200">{lastScanTime}</strong></span>
             <span>|</span>
-            <span>STARTING CAPITAL: <strong className="text-white">₹10,000.00</strong></span>
+            <span>
+              STARTING CAPITAL:{" "}
+              <strong className="text-white">
+                ₹{startingEquity.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </strong>
+            </span>
           </div>
         </div>
 
         {/* 6 CORE METRICS GRID */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="p-3 bg-[#0B0F12] border border-[#1C242D]">
-            <div className="text-[10px] text-slate-400 uppercase">ACTIVE BALANCE</div>
+            <div className="text-[10px] text-slate-400 uppercase">LIVE ACCOUNT BALANCE</div>
             <div className="text-base sm:text-lg font-bold text-[#97CEB4] mt-0.5">
               ₹{liveActiveEquity.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              Open PnL:{" "}
-              <span className={unrealizedPnl >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"}>
-                {unrealizedPnl >= 0 ? "+" : ""}₹{unrealizedPnl.toLocaleString("en-IN")}
+              Avail Margin:{" "}
+              <span className="text-slate-200">
+                ₹{(deltaAvailableInr ?? baseWalletEquity).toLocaleString("en-IN")}
               </span>
+              {deltaWalletUsd > 0 ? ` ($${deltaWalletUsd.toFixed(2)})` : ""}
             </div>
           </div>
 
           <div className="p-3 bg-[#0B0F12] border border-[#1C242D]">
-            <div className="text-[10px] text-slate-400 uppercase">NET PROFIT / ROI</div>
+            <div className="text-[10px] text-slate-400 uppercase">LIVE OPEN PNL (0ms WS)</div>
             <div
               className={`text-base sm:text-lg font-bold mt-0.5 ${
-                totalReturnInr >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"
+                unrealizedPnl >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"
               }`}
             >
-              {totalReturnInr >= 0 ? "+" : ""}₹{totalReturnInr.toLocaleString("en-IN")}
+              {unrealizedPnl >= 0 ? "+" : ""}₹{unrealizedPnl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              Return: {totalReturnPct >= 0 ? "+" : ""}{totalReturnPct}%
+              Locked Margin: ₹{deltaPositionMarginInr.toLocaleString("en-IN")}
             </div>
           </div>
 
           <div className="p-3 bg-[#0B0F12] border border-[#1C242D]">
-            <div className="text-[10px] text-slate-400 uppercase">WIN RATE % (TARGET 75%+)</div>
+            <div className="text-[10px] text-slate-400 uppercase">NET REALIZED PNL (AFTER GST)</div>
+            <div
+              className={`text-base sm:text-lg font-bold mt-0.5 ${
+                netRealizedPnl >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"
+              }`}
+            >
+              {netRealizedPnl >= 0 ? "+" : ""}₹{netRealizedPnl.toLocaleString("en-IN")}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              Total Return: {totalReturnPct >= 0 ? "+" : ""}{totalReturnPct}%
+            </div>
+          </div>
+
+          <div className="p-3 bg-[#0B0F12] border border-[#1C242D]">
+            <div className="text-[10px] text-slate-400 uppercase">WIN RATE % (FEE-CLEARED)</div>
             <div className="text-base sm:text-lg font-bold text-white mt-0.5">
               {winRatePct.toFixed(1)}%
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              {winsCount}W / {lossesCount}L ({totalClosed} Closed)
+              {winsCount}W / {lossesCount}L ({totalClosed} Closed | {deltaFills.length} Fills)
             </div>
           </div>
 
@@ -1221,31 +1018,23 @@ export default function App() {
               ₹{Math.round(liveActiveEquity * 6.5).toLocaleString("en-IN")}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              100% Reinvested (Auto-Vault Off)
+              Protected Floor: ₹{protectedFloor.toLocaleString("en-IN")}
             </div>
           </div>
 
           <div className="p-3 bg-[#0B0F12] border border-[#1C242D]">
-            <div className="text-[10px] text-slate-400 uppercase">PROTECTED FLOOR (75%)</div>
-            <div className="text-base sm:text-lg font-bold text-slate-200 mt-0.5">
-              ₹{protectedFloor.toLocaleString("en-IN")}
-            </div>
-            <div className="text-[10px] text-slate-400 mt-0.5">
-              Peak: ₹{currentPeak.toLocaleString("en-IN")}
-            </div>
-          </div>
-
-          <div className="p-3 bg-[#0B0F12] border border-[#1C242D]">
-            <div className="text-[10px] text-slate-400 uppercase">ACTIVE SLOTS (MAX 3)</div>
+            <div className="text-[10px] text-slate-400 uppercase">LIVE OPEN TRADES (MAX 3)</div>
             <div className="text-sm font-bold text-[#97CEB4] mt-1 truncate">
               {activeCampaigns.length > 0
                 ? `${activeCampaigns.length}/3 OPEN (${activeCampaigns.map((c) => c.symbol.split("/")[0]).join(", ")})`
+                : deltaOpenPositions.length > 0
+                ? `${deltaOpenPositions.length} DELTA POS OPEN`
                 : "0/3 OPEN (SCANNING)"}
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
               {activeCampaigns.length > 0
-                ? `${activeCampaigns.filter((c) => c.tp1_hit).length} Locked at TP1 🔒`
-                : "Max 2 Same-Dir Unhedged"}
+                ? `${activeCampaigns.filter((c) => c.breakeven_locked).length} Fee-Cleared Shield 🔒`
+                : "+0.16% Min Lock (>0.118% Fee)"}
             </div>
           </div>
         </div>
@@ -1262,7 +1051,7 @@ export default function App() {
                   : "bg-[#0B0F12] text-slate-300 border-[#1C242D] hover:border-[#97CEB4]"
               }`}
             >
-              01 // LIVE MARKET &amp; OPEN POSITION
+              01 // LIVE MARKET &amp; OPEN POSITIONS ({activeCampaigns.length})
             </button>
             <button
               type="button"
@@ -1273,9 +1062,9 @@ export default function App() {
                   : "bg-[#0B0F12] text-slate-300 border-[#1C242D] hover:border-[#97CEB4]"
               }`}
             >
-              <span>02 // TRADE ENTRY &amp; EXIT LEDGER</span>
+              <span>02 // LIVE TRADE HISTORY &amp; DELTA FILLS</span>
               <span className="px-1.5 py-0.2 text-[10px] bg-black/30 rounded">
-                {totalClosed}
+                {totalClosed} / {deltaFills.length}
               </span>
             </button>
             <button
@@ -1287,109 +1076,133 @@ export default function App() {
                   : "bg-[#0B0F12] text-slate-300 border-[#1C242D] hover:border-[#97CEB4]"
               }`}
             >
-              03 // 24/7 RENDER &amp; UPTIMEROBOT SYNC
+              03 // DELTA EXCHANGE &amp; RENDER DIAGNOSTICS
             </button>
           </div>
 
-          {activeCampaigns.length > 0 && (
+          {(activeCampaigns.length > 0 || deltaOpenPositions.length > 0) && (
             <button
               type="button"
-              onClick={() => activeCampaigns.forEach((c) => closeActiveTrade(c, c.current_price, "MANUAL_USER_CLOSE"))}
+              onClick={handleEmergencyFlattenAll}
               className="px-3 py-1.5 text-xs font-bold bg-[#FF0055] text-white hover:bg-[#ff246d]"
             >
-              🚨 CLOSE ALL OPEN TRADES ({activeCampaigns.length}/3)
+              🚨 EMERGENCY FLATTEN ALL LIVE TRADES ({Math.max(activeCampaigns.length, deltaOpenPositions.length)})
             </button>
           )}
         </div>
       </header>
 
-      {/* TAB 1: LIVE MARKET & OPEN POSITION */}
+      {/* TAB 1: LIVE MARKET & OPEN POSITIONS */}
       {activeTab === "monitor" && (
         <div className="space-y-4">
-          {/* ACTIVE OPEN POSITION CARD */}
-          <section className="bg-[#11161B] border border-[#1C242D] p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-3 border-b border-[#1C242D]">
+          <section className="bg-[#11161B] border border-[#1C242D] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1C242D]">
               <span className="text-xs font-bold uppercase tracking-wider text-[#97CEB4]">
-                ACTIVE AUTONOMOUS TRADE SLOTS ({activeCampaigns.length}/3 SIMULTANEOUS POSITIONS)
+                LIVE OPEN POSITIONS &amp; REAL-TIME 0MS OPEN PNL ({activeCampaigns.length}/3 SLOTS)
               </span>
               <span className="text-xs text-slate-400">
-                {activeCampaigns.length > 0
-                  ? `Active Slots: ${activeCampaigns.map((c) => `${c.symbol.split("/")[0]} (${c.side} ${c.confluence_score}/100)`).join(" • ")}`
-                  : "3-Slot Portfolio Guard: Slot 1 ≥ 82 | Slot 2 ≥ 85 | Slot 3 ≥ 88 (Max 2 Unhedged Same-Direction)"}
+                Total Open PnL:{" "}
+                <strong className={unrealizedPnl >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"}>
+                  {unrealizedPnl >= 0 ? "+" : ""}₹{unrealizedPnl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                </strong>
               </span>
             </div>
 
-            {pyramid ? (
-              <div className="space-y-3">
-                <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 text-xs">
-                  <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
-                    <span className="text-[10px] text-slate-400 block">PAIR &amp; SIDE</span>
-                    <strong className="text-white">
-                      {pyramid.symbol} ({pyramid.side})
-                    </strong>
-                  </div>
-                  <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
-                    <span className="text-[10px] text-slate-400 block">ENTRY PRICE</span>
-                    <strong className="text-slate-200">${pyramid.base_entry_price}</strong>
-                  </div>
-                  <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
-                    <span className="text-[10px] text-slate-400 block">LIVE MARKET PRICE</span>
-                    <strong className="text-[#97CEB4]">${pyramid.current_price}</strong>
-                  </div>
-                  <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
-                    <span className="text-[10px] text-slate-400 block">HIGH-PROB TP1 (+0.75 ATR)</span>
-                    <strong className="text-[#97CEB4]">
-                      ${pyramid.tp1_price} {pyramid.tp1_hit ? "(75% BANKED ✅)" : "(75% Take-Profit)"}
-                    </strong>
-                  </div>
-                  <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
-                    <span className="text-[10px] text-slate-400 block">EFFECTIVE STOP</span>
-                    <strong className="text-amber-300">
-                      ${pyramid.effective_stop} {pyramid.breakeven_locked ? "(PROFIT LOCKED 🔒)" : "(1.35×ATR)"}
-                    </strong>
-                  </div>
-                  <div className="p-2.5 bg-[#0B0F12] border border-[#1C242D]">
-                    <span className="text-[10px] text-slate-400 block">TOTAL TRADE PNL</span>
-                    <strong className={unrealizedPnl >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"}>
-                      {unrealizedPnl >= 0 ? "+" : ""}₹{unrealizedPnl.toLocaleString("en-IN")}
-                    </strong>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
-                  {pyramid.tranches.map((t) => (
+            {activeCampaigns.length > 0 ? (
+              <div className="space-y-4">
+                {activeCampaigns.map((camp) => {
+                  const campPnl = +(
+                    (camp.total_unrealized_pnl_inr || 0) + (camp.tp1_banked_pnl_inr || 0)
+                  ).toFixed(2);
+                  const estRoundTripFeeWithGst = +((camp.total_notional_inr || 0) * DELTA_FEE_WITH_GST_RATE * 2).toFixed(2);
+                  const netAfterFee = +(campPnl - estRoundTripFeeWithGst).toFixed(2);
+                  return (
                     <div
-                      key={t.id}
-                      className={`p-3 border ${
-                        t.filled ? "border-[#97CEB4] bg-[#97CEB4]/10" : "border-[#1C242D] bg-[#0B0F12]"
-                      }`}
+                      key={camp.trade_id}
+                      className="p-3 bg-[#0B0F12] border border-[#97CEB4]/50 space-y-3"
                     >
-                      <div className="flex justify-between font-bold mb-1">
-                        <span>{t.label}</span>
-                        <span className={t.filled ? "text-[#97CEB4]" : "text-slate-500"}>
-                          {t.filled ? "ACTIVE" : `TRIG $${t.trigger_price}`}
-                        </span>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1C242D] pb-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white text-sm">{camp.symbol}</span>
+                          {camp.delta_symbol && (
+                            <span className="px-1.5 py-0.5 text-[10px] bg-[#97CEB4]/15 text-[#97CEB4] border border-[#97CEB4]/40">
+                              DELTA: {camp.delta_symbol}
+                            </span>
+                          )}
+                          <span
+                            className={`px-2 py-0.5 text-[10px] font-bold ${
+                              camp.side === "LONG"
+                                ? "bg-[#97CEB4] text-[#0B0F12]"
+                                : "bg-[#FF0055] text-white"
+                            }`}
+                          >
+                            {camp.side}
+                          </span>
+                          <span className="text-slate-400 text-[11px]">
+                            Stage: <strong className="text-[#97CEB4]">{camp.max_stage_reached}</strong>
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          Notional:{" "}
+                          <strong className="text-white">
+                            ₹{camp.total_notional_inr.toLocaleString("en-IN")}
+                          </strong>
+                          {camp.live_qty ? ` (${camp.live_qty} Contracts)` : ""}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-400">
-                        Notional: ₹{t.notional_inr.toLocaleString("en-IN")} ({(t.weight_pct * 100).toFixed(0)}%)
-                      </div>
-                      <div className="mt-1.5 pt-1.5 border-t border-[#1C242D] flex justify-between">
-                        <span>Fill: {t.fill_price ? `$${t.fill_price}` : "Waiting"}</span>
-                        <span className={t.unrealized_pnl_inr >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"}>
-                          {t.filled ? `${t.unrealized_pnl_inr >= 0 ? "+" : ""}₹${t.unrealized_pnl_inr}` : "—"}
-                        </span>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 text-xs">
+                        <div className="p-2.5 bg-[#11161B] border border-[#1C242D]">
+                          <span className="text-[10px] text-slate-400 block">EXACT ENTRY PRICE</span>
+                          <strong className="text-slate-200">
+                            ${camp.entry_price_raw ? fmtPrice(camp.entry_price_raw) : camp.base_entry_price}
+                          </strong>
+                        </div>
+                        <div className="p-2.5 bg-[#11161B] border border-[#1C242D]">
+                          <span className="text-[10px] text-slate-400 block">DELTA MARK PRICE (0ms)</span>
+                          <strong className="text-[#97CEB4]">${camp.current_price}</strong>
+                        </div>
+                        <div className="p-2.5 bg-[#11161B] border border-[#1C242D]">
+                          <span className="text-[10px] text-slate-400 block">STAGE-2 BANK (+0.88%)</span>
+                          <strong className="text-[#97CEB4]">
+                            ${camp.tp1_price} {camp.tp1_hit ? "(50% BANKED ✅)" : "(50% Cash Lock)"}
+                          </strong>
+                        </div>
+                        <div className="p-2.5 bg-[#11161B] border border-[#1C242D]">
+                          <span className="text-[10px] text-slate-400 block">HARDWARE STOP</span>
+                          <strong className="text-amber-300">
+                            ${camp.effective_stop}{" "}
+                            {camp.breakeven_locked ? "(FEE-CLEARED LOCK 🔒)" : "(90s Wick Shield)"}
+                          </strong>
+                        </div>
+                        <div className="p-2.5 bg-[#11161B] border border-[#1C242D]">
+                          <span className="text-[10px] text-slate-400 block">LIQUIDATION / MARGIN</span>
+                          <strong className="text-slate-300">
+                            {camp.liquidation_price ? `$${camp.liquidation_price}` : "Isolated 8x"}
+                            {camp.margin_inr ? ` (₹${camp.margin_inr})` : ""}
+                          </strong>
+                        </div>
+                        <div className="p-2.5 bg-[#11161B] border border-[#1C242D]">
+                          <span className="text-[10px] text-slate-400 block">LIVE OPEN PNL (MARK)</span>
+                          <strong className={campPnl >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"}>
+                            {campPnl >= 0 ? "+" : ""}₹{campPnl.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                          </strong>
+                          <span className="text-[9px] text-slate-500 block mt-0.5">
+                            Net of Fee+GST: {netAfterFee >= 0 ? "+" : ""}₹{netAfterFee.toLocaleString("en-IN")}
+                          </span>
+                        </div>
                       </div>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             ) : (
               <div className="p-6 bg-[#0B0F12] border border-[#1C242D] text-center space-y-1">
                 <div className="text-xs font-bold text-slate-300">
-                  SCANNING 10 MARKETS ON 5-MINUTE CANDLES (VWAP + CONNORS RSI-2 + MICRO-SQUEEZE)
+                  NO OPEN POSITIONS ON DELTA EXCHANGE — V9.5 FEE-SHIELD &amp; 90S WICK-GUARD ACTIVE
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Enters automatically when 6-Factor Confluence Score ≥ 76/100. Banks 75% of size at +0.75 ATR (TP1) and locks breakeven on the 25% runner for a 75–82% target win rate.
+                  Prioritizes High-Beta Alpha Pairs (LINK, DOGE, SOL, AVAX, ADA), blocks low-KER chop, places resting Maker Limit TP at +1.85%, and only locks stops above the 0.118% fee+GST hurdle (+0.16% / +0.34% / +0.60%).
                 </p>
               </div>
             )}
@@ -1399,10 +1212,10 @@ export default function App() {
           <section className="bg-[#11161B] border border-[#1C242D] p-4">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-2 mb-3 border-b border-[#1C242D]">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-200">
-                10-MARKET REAL-TIME 5M QUANT SCANNER (TRADINGVIEW MATCHED)
+                10-MARKET REAL-TIME 0MS DELTA WEBSOCKET &amp; V9.5 FEE-SHIELD SCANNER
               </span>
               <span className="text-[11px] text-[#97CEB4]">
-                Multi-Exchange Redundant Feed (Bybit V5 / Binance Vision / Kraken)
+                Live Stream: wss://socket.india.delta.exchange (v2/ticker Mark Price)
               </span>
             </div>
 
@@ -1411,7 +1224,7 @@ export default function App() {
                 <thead>
                   <tr className="text-slate-400 border-b border-[#1C242D]">
                     <th className="py-2 px-2">PAIR</th>
-                    <th className="py-2 px-2 text-right">LIVE PRICE (USDT)</th>
+                    <th className="py-2 px-2 text-right">DELTA MARK PRICE</th>
                     <th className="py-2 px-2 text-right">VWAP Z-SCORE</th>
                     <th className="py-2 px-2 text-right">RSI(2) SNIPER</th>
                     <th className="py-2 px-2 text-center">SQUEEZE COIL</th>
@@ -1422,7 +1235,7 @@ export default function App() {
                 </thead>
                 <tbody>
                   {scanner.map((a) => {
-                    const pDec = a.price < 0.001 ? 8 : a.price < 1 ? 4 : a.price < 50 ? 3 : 2;
+                    const pDec = a.price < 0.001 ? 8 : a.price < 1 ? 5 : a.price < 50 ? 4 : 2;
                     const rvolPct = Math.min(100, Math.round((a.rvol / 2.8) * 100));
                     return (
                       <tr key={a.symbol} className="border-b border-[#1C242D] hover:bg-[#141B22]">
@@ -1435,9 +1248,9 @@ export default function App() {
                         </td>
                         <td
                           className={`py-2.5 px-2 text-right ${
-                            a.z_score <= -1.15
+                            a.z_score <= -1.0
                               ? "text-[#97CEB4] font-bold"
-                              : a.z_score >= 1.15
+                              : a.z_score >= 1.0
                               ? "text-[#FF0055] font-bold"
                               : "text-slate-300"
                           }`}
@@ -1470,11 +1283,11 @@ export default function App() {
                           <div className="flex items-center gap-2">
                             <div className="w-16 h-2 bg-[#0B0F12] border border-[#1C242D]">
                               <div
-                                className={`h-full ${a.rvol >= 1.25 ? "bg-[#97CEB4]" : "bg-slate-600"}`}
+                                className={`h-full ${a.rvol >= 1.12 ? "bg-[#97CEB4]" : "bg-slate-600"}`}
                                 style={{ width: `${rvolPct}%` }}
                               />
                             </div>
-                            <span className={a.rvol >= 1.25 ? "text-[#97CEB4] font-bold" : "text-slate-400"}>
+                            <span className={a.rvol >= 1.12 ? "text-[#97CEB4] font-bold" : "text-slate-400"}>
                               {a.rvol.toFixed(2)}x
                             </span>
                           </div>
@@ -1482,9 +1295,9 @@ export default function App() {
                         <td className="py-2.5 px-2 text-center">
                           <span
                             className={`px-2 py-0.5 text-[10px] font-bold ${
-                              a.confluence_score >= 76
+                              a.confluence_score >= 96
                                 ? "bg-[#97CEB4] text-[#0B0F12]"
-                                : a.confluence_score >= 65
+                                : a.confluence_score >= 80
                                 ? "border border-[#97CEB4]/50 text-[#97CEB4]"
                                 : "text-slate-400"
                             }`}
@@ -1513,33 +1326,41 @@ export default function App() {
         </div>
       )}
 
-      {/* TAB 2: DEDICATED TRADE ENTRY & EXIT LEDGER */}
+      {/* TAB 2: DEDICATED LIVE TRADE HISTORY & DELTA EXCHANGE FILLS LEDGER */}
       {activeTab === "trades" && (
         <section className="bg-[#11161B] border border-[#1C242D] p-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#1C242D]">
             <div>
               <h2 className="text-xs font-bold uppercase tracking-wider text-[#97CEB4]">
-                02 // COMPLETE TRADE ENTRY &amp; EXIT LEDGER
+                02 // LIVE TRADE ENTRY, EXIT &amp; DELTA EXCHANGE FILLS LEDGER (INCLUDES 18% GST)
               </h2>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Every automatic bot entry, TP1 75% profit lock, runner stop exit, and exact profit/loss in ₹ and %
+                Synced in real time with Delta Exchange India (/v2/fills + /v2/wallet/transactions)
               </p>
             </div>
-            <div className="flex items-center gap-2 text-xs">
-              {(["ALL", "WIN", "LOSS"] as const).map((f) => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => setTradeFilter(f)}
-                  className={`px-2.5 py-1 border ${
-                    tradeFilter === f
-                      ? "border-[#97CEB4] bg-[#97CEB4]/15 text-[#97CEB4] font-bold"
-                      : "border-[#1C242D] bg-[#0B0F12] text-slate-400"
-                  }`}
-                >
-                  {f === "ALL" ? `ALL (${totalClosed})` : f === "WIN" ? `WINS (${winsCount})` : `LOSSES (${lossesCount})`}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setTradeSubTab("closed")}
+                className={`px-2.5 py-1 border ${
+                  tradeSubTab === "closed"
+                    ? "border-[#97CEB4] bg-[#97CEB4] text-[#0B0F12] font-bold"
+                    : "border-[#1C242D] bg-[#0B0F12] text-slate-300"
+                }`}
+              >
+                CLOSED ROUND-TRIP TRADES ({totalClosed})
+              </button>
+              <button
+                type="button"
+                onClick={() => setTradeSubTab("fills")}
+                className={`px-2.5 py-1 border ${
+                  tradeSubTab === "fills"
+                    ? "border-[#97CEB4] bg-[#97CEB4] text-[#0B0F12] font-bold"
+                    : "border-[#1C242D] bg-[#0B0F12] text-slate-300"
+                }`}
+              >
+                RAW DELTA EXCHANGE FILLS ({deltaFills.length})
+              </button>
             </div>
           </div>
 
@@ -1571,112 +1392,227 @@ export default function App() {
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="text-slate-400 border-b border-[#1C242D]">
-                  <th className="py-2 px-2">TRADE ID</th>
-                  <th className="py-2 px-2">PAIR &amp; SIDE</th>
-                  <th className="py-2 px-2">ENTRY TIME &amp; PRICE</th>
-                  <th className="py-2 px-2 text-center">STAGE &amp; SCORE</th>
-                  <th className="py-2 px-2">EXIT TIME &amp; PRICE</th>
-                  <th className="py-2 px-2">EXIT REASON</th>
-                  <th className="py-2 px-2 text-right">PROFIT / LOSS</th>
-                  <th className="py-2 px-2 text-right">NEW BALANCE</th>
-                  <th className="py-2 px-2 text-right">RECEIPT</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredTrades.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="py-8 text-center text-slate-400">
-                      No completed trades yet. As soon as the bot enters and exits its first real 5m setup, the full record and receipt link will appear here.
-                    </td>
+          {tradeSubTab === "closed" ? (
+            <>
+              <div className="flex items-center gap-2 text-xs">
+                {(["ALL", "WIN", "LOSS"] as const).map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setTradeFilter(f)}
+                    className={`px-2.5 py-1 border ${
+                      tradeFilter === f
+                        ? "border-[#97CEB4] bg-[#97CEB4]/15 text-[#97CEB4] font-bold"
+                        : "border-[#1C242D] bg-[#0B0F12] text-slate-400"
+                    }`}
+                  >
+                    {f === "ALL" ? `ALL (${totalClosed})` : f === "WIN" ? `WINS (${winsCount})` : `LOSSES (${lossesCount})`}
+                  </button>
+                ))}
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="text-slate-400 border-b border-[#1C242D]">
+                      <th className="py-2 px-2">TRADE ID</th>
+                      <th className="py-2 px-2">PAIR &amp; SIDE</th>
+                      <th className="py-2 px-2">ENTRY TIME &amp; PRICE</th>
+                      <th className="py-2 px-2 text-center">STAGE &amp; SOURCE</th>
+                      <th className="py-2 px-2">EXIT TIME &amp; PRICE</th>
+                      <th className="py-2 px-2">EXIT REASON</th>
+                      <th className="py-2 px-2 text-right">NET PNL (AFTER GST)</th>
+                      <th className="py-2 px-2 text-right">NEW BALANCE</th>
+                      <th className="py-2 px-2 text-right">RECEIPT</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTrades.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="py-8 text-center text-slate-400">
+                          No closed trades recorded yet. Click &quot;🔄 INSTANT DELTA SYNC&quot; to pull live Delta Exchange fills or wait for the next V9.5 trade execution.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredTrades.map((t) => (
+                        <tr key={t.trade_id} className="border-b border-[#1C242D] hover:bg-[#141B22]">
+                          <td className="py-2.5 px-2 font-bold text-slate-300">{t.trade_id}</td>
+                          <td className="py-2.5 px-2 font-bold text-white">
+                            {t.symbol}{" "}
+                            <span
+                              className={`px-1.5 py-0.5 text-[10px] ${
+                                t.side === "LONG"
+                                  ? "bg-[#97CEB4]/15 text-[#97CEB4]"
+                                  : "bg-[#FF0055]/15 text-[#FF0055]"
+                              }`}
+                            >
+                              {t.side}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-2">
+                            <div className="text-white">${t.entry_price}</div>
+                            <div className="text-[10px] text-slate-400">{t.entry_time}</div>
+                          </td>
+                          <td className="py-2.5 px-2 text-center">
+                            <span className="px-2 py-0.5 text-[10px] border border-[#97CEB4]/40 text-[#97CEB4]">
+                              {t.max_stage_reached} ({t.confluence_score || 98}/100)
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-2">
+                            <div className="text-white">${t.exit_price}</div>
+                            <div className="text-[10px] text-slate-400">{t.exit_time}</div>
+                          </td>
+                          <td className="py-2.5 px-2 text-slate-300">{t.exit_reason}</td>
+                          <td
+                            className={`py-2.5 px-2 text-right font-bold ${
+                              t.realized_pnl_inr >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"
+                            }`}
+                          >
+                            {t.realized_pnl_inr >= 0 ? "+" : ""}₹{t.realized_pnl_inr.toLocaleString("en-IN")} (
+                            {t.roi_pct >= 0 ? "+" : ""}
+                            {t.roi_pct}%)
+                          </td>
+                          <td className="py-2.5 px-2 text-right font-bold text-white">
+                            ₹{t.balance_after_inr.toLocaleString("en-IN")}
+                          </td>
+                          <td className="py-2.5 px-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTradeModal(t)}
+                              className="text-[#97CEB4] underline hover:text-white"
+                            >
+                              Receipt ↗
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-slate-400 border-b border-[#1C242D]">
+                    <th className="py-2 px-2">FILL ID</th>
+                    <th className="py-2 px-2">DELTA CONTRACT</th>
+                    <th className="py-2 px-2">SIDE</th>
+                    <th className="py-2 px-2 text-right">CONTRACTS</th>
+                    <th className="py-2 px-2 text-right">FILL PRICE</th>
+                    <th className="py-2 px-2 text-right">NOTIONAL (₹)</th>
+                    <th className="py-2 px-2 text-right">FEE + 18% GST (₹)</th>
+                    <th className="py-2 px-2 text-center">ROLE</th>
+                    <th className="py-2 px-2 text-right">TIMESTAMP</th>
                   </tr>
-                ) : (
-                  filteredTrades.map((t) => (
-                    <tr key={t.trade_id} className="border-b border-[#1C242D] hover:bg-[#141B22]">
-                      <td className="py-2.5 px-2 font-bold text-slate-300">{t.trade_id}</td>
-                      <td className="py-2.5 px-2 font-bold text-white">
-                        {t.symbol}{" "}
-                        <span
-                          className={`px-1.5 py-0.5 text-[10px] ${
-                            t.side === "LONG"
-                              ? "bg-[#97CEB4]/15 text-[#97CEB4]"
-                              : "bg-[#FF0055]/15 text-[#FF0055]"
-                          }`}
-                        >
-                          {t.side}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-2">
-                        <div className="text-white">${t.entry_price}</div>
-                        <div className="text-[10px] text-slate-400">{t.entry_time}</div>
-                      </td>
-                      <td className="py-2.5 px-2 text-center">
-                        <span className="px-2 py-0.5 text-[10px] border border-[#97CEB4]/40 text-[#97CEB4]">
-                          {t.max_stage_reached} ({t.confluence_score || 80}/100)
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-2">
-                        <div className="text-white">${t.exit_price}</div>
-                        <div className="text-[10px] text-slate-400">{t.exit_time}</div>
-                      </td>
-                      <td className="py-2.5 px-2 text-slate-300">{t.exit_reason}</td>
-                      <td
-                        className={`py-2.5 px-2 text-right font-bold ${
-                          t.realized_pnl_inr >= 0 ? "text-[#97CEB4]" : "text-[#FF0055]"
-                        }`}
-                      >
-                        {t.realized_pnl_inr >= 0 ? "+" : ""}₹{t.realized_pnl_inr.toLocaleString("en-IN")} (
-                        {t.roi_pct >= 0 ? "+" : ""}
-                        {t.roi_pct}%)
-                      </td>
-                      <td className="py-2.5 px-2 text-right font-bold text-white">
-                        ₹{t.balance_after_inr.toLocaleString("en-IN")}
-                      </td>
-                      <td className="py-2.5 px-2 text-right">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedTradeModal(t)}
-                          className="text-[#97CEB4] underline hover:text-white"
-                        >
-                          Receipt ↗
-                        </button>
+                </thead>
+                <tbody>
+                  {deltaFills.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-8 text-center text-slate-400">
+                        No raw fills returned from Delta Exchange (/v2/fills) yet. Ensure your Render Outbound IP ({serverOutboundIp}) is whitelisted in Delta Exchange API Management.
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  ) : (
+                    deltaFills.map((f) => (
+                      <tr key={f.fill_id} className="border-b border-[#1C242D] hover:bg-[#141B22]">
+                        <td className="py-2.5 px-2 font-bold text-slate-300">{f.fill_id}</td>
+                        <td className="py-2.5 px-2 font-bold text-white">
+                          {f.delta_symbol} <span className="text-slate-500 text-[10px]">({f.symbol})</span>
+                        </td>
+                        <td className="py-2.5 px-2">
+                          <span
+                            className={`px-1.5 py-0.5 text-[10px] font-bold ${
+                              f.side === "BUY"
+                                ? "bg-[#97CEB4]/15 text-[#97CEB4]"
+                                : "bg-[#FF0055]/15 text-[#FF0055]"
+                            }`}
+                          >
+                            {f.side}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-2 text-right text-white">{f.contracts}</td>
+                        <td className="py-2.5 px-2 text-right text-white">${f.price}</td>
+                        <td className="py-2.5 px-2 text-right text-slate-200">
+                          ₹{f.notional_inr.toLocaleString("en-IN")}
+                        </td>
+                        <td className="py-2.5 px-2 text-right text-amber-300">
+                          ₹{f.fee_inr.toLocaleString("en-IN")}
+                        </td>
+                        <td className="py-2.5 px-2 text-center text-slate-400">{f.role}</td>
+                        <td className="py-2.5 px-2 text-right text-slate-400">{f.timestamp}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </section>
       )}
 
-      {/* TAB 3: 24/7 RENDER CLOUD & UPTIMEROBOT SYNC */}
+      {/* TAB 3: DELTA EXCHANGE & RENDER CLOUD DIAGNOSTICS */}
       {activeTab === "cloud" && (
         <section className="bg-[#11161B] border border-[#1C242D] p-4 space-y-4">
           <div className="border-b border-[#1C242D] pb-3">
             <h2 className="text-xs font-bold uppercase tracking-wider text-[#97CEB4]">
-              03 // 24/7 RENDER SERVER + UPTIMEROBOT KEEP-ALIVE CONFIGURATION
+              03 // LIVE DELTA EXCHANGE INDIA &amp; ZERO-LAG WEBSOCKET DIAGNOSTICS
             </h2>
             <p className="text-[11px] text-slate-400 mt-0.5">
-              Connect your Render Python URL so your ₹10,000 paper balance and trades run 24/7 on the server even when your phone or laptop is off.
+              Verify live Delta Exchange India API + WebSocket connection, Render server outbound IP for whitelisting, and 24/7 keep-alive sync.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-xs">
+            <div className="p-4 bg-[#0B0F12] border border-[#1C242D] space-y-2">
+              <div className="font-bold text-white">1. DELTA EXCHANGE INDIA LIVE STATUS</div>
+              <div className="text-[11px] space-y-1">
+                <div>
+                  REST Account Sync:{" "}
+                  <strong className={deltaConnected ? "text-[#97CEB4]" : "text-[#FF0055]"}>
+                    {deltaConnected ? "CONNECTED (https://api.india.delta.exchange)" : "DISCONNECTED / CHECK IP WHITELIST"}
+                  </strong>
+                </div>
+                <div>
+                  0ms WebSocket Stream:{" "}
+                  <strong className={browserDeltaWsLive || deltaWsConnected ? "text-[#97CEB4]" : "text-amber-300"}>
+                    {browserDeltaWsLive || deltaWsConnected ? "ACTIVE (wss://socket.india.delta.exchange)" : "CONNECTING..."}
+                  </strong>
+                </div>
+                <div>
+                  Render Server Outbound IP:{" "}
+                  <strong className="text-amber-300 select-all">{serverOutboundIp}</strong>
+                </div>
+                <div>
+                  Live Wallet Equity:{" "}
+                  <strong className="text-white">
+                    {deltaWalletInr !== null ? `₹${deltaWalletInr.toLocaleString("en-IN")}` : "Syncing..."}
+                  </strong>
+                </div>
+                <div>
+                  Last Delta Sync:{" "}
+                  <strong className="text-slate-300">{deltaLastSyncTs || "Pending"}</strong>
+                </div>
+                {deltaApiError && (
+                  <div className="p-2 mt-2 bg-[#FF0055]/10 border border-[#FF0055] text-[#FF0055] text-[10px]">
+                    Delta Error: {deltaApiError} — Add IP <strong>{serverOutboundIp}</strong> to Delta Exchange &gt; API Management Whitelist.
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="p-4 bg-[#0B0F12] border border-[#1C242D] space-y-3">
-              <div className="font-bold text-white">1. LINK YOUR RENDER BACKEND URL</div>
+              <div className="font-bold text-white">2. LINK YOUR RENDER BACKEND URL</div>
               <p className="text-slate-400 text-[11px]">
-                Paste your Render service URL below (e.g., <code className="text-[#97CEB4]">https://your-service.onrender.com</code>) or set <code className="text-[#97CEB4]">NEXT_PUBLIC_API_URL</code> in Vercel Environment Variables:
+                Paste your Render service URL below:
               </p>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={renderUrlInput}
                   onChange={(e) => setRenderUrlInput(e.target.value)}
-                  placeholder="https://apex-omega-v9.onrender.com"
+                  placeholder="https://apex-omega-v9-original-live.onrender.com"
                   className="flex-1 bg-[#11161B] border border-[#1C242D] px-3 py-2 text-xs text-white focus:outline-none focus:border-[#97CEB4]"
                 />
                 <button
@@ -1688,29 +1624,26 @@ export default function App() {
                 </button>
               </div>
               <div className="text-[11px] text-slate-400">
-                Current Active Engine:{" "}
-                <strong className="text-[#97CEB4]">
-                  {renderUrl ? `Render (${renderUrl})` : "Multi-Exchange 5m Live Stream (Bybit / Binance / Kraken)"}
-                </strong>
+                Active Backend: <strong className="text-[#97CEB4]">{renderUrl}</strong>
               </div>
             </div>
 
             <div className="p-4 bg-[#0B0F12] border border-[#1C242D] space-y-3">
-              <div className="font-bold text-white">2. UPTIMEROBOT 5-MINUTE KEEP-ALIVE URL</div>
+              <div className="font-bold text-white">3. UPTIMEROBOT 5-MINUTE KEEP-ALIVE URL</div>
               <p className="text-slate-400 text-[11px]">
-                In UptimeRobot, create an <strong>HTTP(s) Monitor</strong> (Interval: 5 minutes) pointing to your Render backend&apos;s <code className="text-[#97CEB4]">/health</code> endpoint so Render never sleeps:
+                Point UptimeRobot HTTP(s) Monitor (5m interval) to:
               </p>
               <div className="p-2.5 bg-[#11161B] border border-[#1C242D] text-[#97CEB4] select-all">
-                {renderUrl ? `${renderUrl}/health` : "https://apex-omega-v9.onrender.com/health"}
+                {renderUrl ? `${renderUrl}/health` : "https://apex-omega-v9-original-live.onrender.com/health"}
               </div>
               <div className="flex items-center justify-between pt-2">
-                <span className="text-[11px] text-slate-400">Need to start a fresh ₹10,000 test run?</span>
+                <span className="text-[11px] text-slate-400">Re-sync / Reset Local Cache:</span>
                 <button
                   type="button"
                   onClick={handleResetPaperAccount}
                   className="px-3 py-1 text-[11px] border border-[#FF0055]/60 text-[#FF0055] hover:bg-[#FF0055] hover:text-white"
                 >
-                  Reset Paper Account to ₹10,000
+                  Reset &amp; Re-Sync Live Account
                 </button>
               </div>
             </div>
