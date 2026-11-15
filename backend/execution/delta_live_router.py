@@ -1062,7 +1062,12 @@ class DeltaIndiaLiveRouter:
             c_val = self.get_contract_value(delta_sym)
             notional_usd = notional_inr / max(self.usd_inr_rate, 1.0)
             raw_contracts = notional_usd / max(entry_price * c_val, 1e-9)
-            qty = max(1, int(round(raw_contracts)))
+            rounded_qty = max(1, int(round(raw_contracts)))
+            if rounded_qty > raw_contracts * 1.05 and raw_contracts >= 1.0:
+                import math
+                qty = max(1, int(math.floor(raw_contracts)))
+            else:
+                qty = rounded_qty
 
             p_meta = self.product_meta.get(delta_sym, {})
             product_id = p_meta.get("id")
@@ -1352,6 +1357,7 @@ class DeltaIndiaLiveRouter:
         side: str,
         remaining_qty: float,
         stop_order_id: Optional[str],
+        prefer_maker: bool = False,
     ) -> Optional[float]:
         if not await self.ensure_ready() or not delta_symbol or remaining_qty <= 0:
             return None
@@ -1387,18 +1393,61 @@ class DeltaIndiaLiveRouter:
 
             close_side = "sell" if side == "LONG" else "buy"
             if product_id:
-                close_res, _ = await self.delta_rest(
-                    "POST",
-                    "/v2/orders",
-                    body={
-                        "product_id": product_id,
-                        "size": max(1, int(round(remaining_qty))),
-                        "side": close_side,
-                        "order_type": "market_order",
-                        "reduce_only": True,
-                    },
-                    authenticated=True,
-                )
+                close_res = None
+                qty_int = max(1, int(round(remaining_qty)))
+                if prefer_maker:
+                    bbo = self.live_ticker_bbo.get(delta_symbol, {})
+                    maker_px = float(bbo.get("bid") if close_side == "buy" else bbo.get("ask") or 0.0)
+                    if maker_px > 0:
+                        lim_res, _ = await self.delta_rest(
+                            "POST",
+                            "/v2/orders",
+                            body={
+                                "product_id": product_id,
+                                "size": qty_int,
+                                "side": close_side,
+                                "order_type": "limit_order",
+                                "limit_price": str(_fmt_price(maker_px)),
+                                "post_only": True,
+                                "reduce_only": True,
+                            },
+                            authenticated=True,
+                        )
+                        if lim_res and isinstance(lim_res.get("result"), dict):
+                            l_obj = lim_res["result"]
+                            l_id = l_obj.get("id")
+                            l_state = str(l_obj.get("state") or "").lower()
+                            if l_state in ("closed", "filled") and float(l_obj.get("unfilled_size") or 0.0) <= 0:
+                                close_res = lim_res
+                            elif l_id and l_state not in ("cancelled", "rejected"):
+                                await asyncio.sleep(0.65)
+                                chk_res, _ = await self.delta_rest("GET", f"/v2/orders/{l_id}", authenticated=True)
+                                if chk_res and isinstance(chk_res.get("result"), dict):
+                                    c_obj = chk_res["result"]
+                                    unfilled = float(c_obj.get("unfilled_size") or 0.0)
+                                    if str(c_obj.get("state") or "").lower() in ("closed", "filled") and unfilled <= 0:
+                                        close_res = chk_res
+                                    else:
+                                        await self.delta_rest(
+                                            "DELETE",
+                                            "/v2/orders",
+                                            body={"id": int(l_id) if str(l_id).isdigit() else l_id, "product_id": product_id},
+                                            authenticated=True,
+                                        )
+                                        qty_int = max(0, int(round(unfilled)))
+                if not close_res and qty_int > 0:
+                    close_res, _ = await self.delta_rest(
+                        "POST",
+                        "/v2/orders",
+                        body={
+                            "product_id": product_id,
+                            "size": qty_int,
+                            "side": close_side,
+                            "order_type": "market_order",
+                            "reduce_only": True,
+                        },
+                        authenticated=True,
+                    )
                 self._force_full_refresh = True
                 if close_res and isinstance(close_res.get("result"), dict):
                     res_obj = close_res["result"]

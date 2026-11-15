@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -47,6 +48,7 @@ UNIVERSE_MAP = [
 SCANNER_TO_DELTA_SYM = {item[0]: item[3] for item in UNIVERSE_MAP}
 
 STATE_PATH = Path(__file__).parent / "bot_state.json"
+DASHBOARD_HTML_PATH = Path(__file__).parent / "dashboard_v10.html"
 BOOT_TIME = time.time()
 
 
@@ -93,7 +95,7 @@ class AutonomousDaemonV9:
     LOSS_COOLDOWN_SEC = 2700
     DIRECTION_PAUSE_SEC = 2700
     MAX_OPEN_SLOTS = 3
-    WICK_SHIELD_HOLD_SEC = 90.0
+    WICK_SHIELD_HOLD_SEC = 60.0
 
     def __init__(self):
         self.squeeze_engine = SqueezeEngine()
@@ -387,13 +389,13 @@ class AutonomousDaemonV9:
                 entry_p_raw = float(pos.get("entry_price_raw") or pos["entry_price"] or pos["mark_price"])
                 mark_p_raw = float(pos.get("mark_price_raw") or pos["mark_price"] or entry_p_raw)
                 is_tier1 = sym in TIER1_ALPHA_SYMBOLS
-                hard_stop_dist = 0.0062 if is_tier1 else 0.0068
-                soft_stop_dist = 0.0046 if is_tier1 else 0.0052
+                hard_stop_dist = 0.0036
+                soft_stop_dist = 0.0028
                 default_stop = fmt_price(entry_p_raw * (1.0 - direction * hard_stop_dist))
                 soft_stop = fmt_price(entry_p_raw * (1.0 - direction * soft_stop_dist))
                 eff_stop = fmt_price(float(pos["stop_price"])) if pos.get("stop_price") else default_stop
-                stage2_trig = fmt_price(entry_p_raw * (1.0 + direction * 0.0088))
-                stage4_tp = fmt_price(entry_p_raw * (1.0 + direction * 0.0185))
+                stage2_trig = fmt_price(entry_p_raw * (1.0 + direction * 0.0065))
+                stage4_tp = fmt_price(entry_p_raw * (1.0 + direction * 0.0160))
                 sig_item = self.scanner_cache.get(sym, {})
                 atr_val = float(sig_item.get("atr_14") or (entry_p_raw * 0.0065))
 
@@ -460,11 +462,13 @@ class AutonomousDaemonV9:
         self._update_campaign(camp, live_price)
         if self.live_router.is_live() and camp.get("delta_symbol"):
             if camp not in self.active_campaigns:
+                is_prof = float(prev_stage or 0) >= 0.25
                 await self.live_router.close_live_trade(
                     camp["delta_symbol"],
                     camp["side"],
                     float(camp.get("remaining_qty") or camp.get("live_qty") or 0.0),
                     camp.get("stop_order_id"),
+                    prefer_maker=is_prof,
                 )
                 await self.sync_live_delta_state(force=True)
             else:
@@ -505,14 +509,8 @@ class AutonomousDaemonV9:
                     None, self._fetch_multi_exchange_klines, ticker, kraken_pair, delta_sym
                 )
                 if ohlcv and len(ohlcv) >= 30:
-                    ws_mk = self.live_router.live_ticker_marks.get(delta_sym)
-                    if ws_mk and ws_mk > 0:
-                        ohlcv[-1][4] = ws_mk
-                        if ws_mk > ohlcv[-1][2]:
-                            ohlcv[-1][2] = ws_mk
-                        if ws_mk < ohlcv[-1][3]:
-                            ohlcv[-1][3] = ws_mk
                     sig = self.squeeze_engine.evaluate_ohlcv(display_sym, ohlcv, feed_source=src)
+                    ws_mk = self.live_router.live_ticker_marks.get(delta_sym)
                     sig_dict = sig.to_dict()
                     if ws_mk and ws_mk > 0:
                         sig_dict["price"] = fmt_price(ws_mk)
@@ -623,8 +621,8 @@ class AutonomousDaemonV9:
                 fill_p = float(res["fill_price"] or camp["entry_price_raw"])
                 direction = 1.0 if camp["side"] == "LONG" else -1.0
                 is_tier1 = camp["symbol"] in TIER1_ALPHA_SYMBOLS
-                hard_stop_dist = 0.0062 if is_tier1 else 0.0068
-                soft_stop_dist = 0.0046 if is_tier1 else 0.0052
+                hard_stop_dist = 0.0036
+                soft_stop_dist = 0.0028
                 camp["delta_symbol"] = res["delta_symbol"]
                 camp["live_qty"] = res["qty"]
                 camp["remaining_qty"] = res["remaining_qty"]
@@ -640,8 +638,8 @@ class AutonomousDaemonV9:
                 camp["chandelier_stop"] = fmt_price(fill_p * (1.0 - direction * hard_stop_dist))
                 camp["soft_stop"] = fmt_price(fill_p * (1.0 - direction * soft_stop_dist))
                 camp["effective_stop"] = camp["chandelier_stop"]
-                camp["tp1_price"] = fmt_price(fill_p * (1.0 + direction * 0.0088))
-                camp["tp2_price"] = fmt_price(fill_p * (1.0 + direction * 0.0185))
+                camp["tp1_price"] = fmt_price(fill_p * (1.0 + direction * 0.0065))
+                camp["tp2_price"] = fmt_price(fill_p * (1.0 + direction * 0.0160))
                 camp["entry_ts"] = time.time()
                 camp["is_live_delta"] = True
                 if camp.get("tranches"):
@@ -652,8 +650,11 @@ class AutonomousDaemonV9:
 
     def _build_new_campaign(self, sig: Dict[str, Any]) -> Dict[str, Any]:
         active_eq = float(self.state["active_equity"])
-        lev = 7.2 if sig["confluence_score"] >= 98 else 6.5
-        total_notional = round(active_eq * lev, 2)
+        peak_eq = max(float(self.state.get("peak_equity", active_eq)), active_eq, 1.0)
+        dd_ratio = (peak_eq - active_eq) / peak_eq
+        lev = 4.0 if dd_ratio > 0.15 else (7.2 if sig["confluence_score"] >= 98 else 6.5)
+        eff_eq = min(active_eq, 350000.0 / lev)
+        total_notional = round(eff_eq * lev, 2)
 
         side = "SHORT" if sig["regime"] == "SHORT_IGNITION" else "LONG"
         direction = 1.0 if side == "LONG" else -1.0
@@ -663,10 +664,10 @@ class AutonomousDaemonV9:
         # V9.5 Two-Tier Anti-Whipsaw Stop Geometry + Fee-Cleared Ratchet Targets:
         # - Hardware Disaster Stop on Delta Exchange: -0.62% (Tier-1) / -0.68% (Tier-2) to survive 30s intra-candle wicks
         # - Soft Confirmation Stop (after 90s hold): -0.46% (Tier-1) / -0.52% (Tier-2)
-        hard_stop_dist = 0.0062 if is_tier1 else 0.0068
-        soft_stop_dist = 0.0046 if is_tier1 else 0.0052
-        stage2_trig = fmt_price(entry_price * (1.0 + direction * 0.0088))
-        stage4_tp = fmt_price(entry_price * (1.0 + direction * 0.0185))
+        hard_stop_dist = 0.0036
+        soft_stop_dist = 0.0028
+        stage2_trig = fmt_price(entry_price * (1.0 + direction * 0.0065))
+        stage4_tp = fmt_price(entry_price * (1.0 + direction * 0.0160))
         initial_stop = fmt_price(entry_price * (1.0 - direction * hard_stop_dist))
         soft_stop = fmt_price(entry_price * (1.0 - direction * soft_stop_dist))
         entry_fee = round(total_notional * self.FEE_RATE, 2)
@@ -745,89 +746,71 @@ class AutonomousDaemonV9:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # V9.7 Stage 0.25 Slippage-Proof Fee Shield (+0.32% move): Locks Stop at Entry + 0.20% (clears 0.118% Taker+GST + 1-2 ticks of exit slippage for +₹45+ net win!)
-        if max_fav_pct >= 0.0032 and camp.get("ratchet_stage", 0) < 0.25:
+        # Merged Stage 0.25 Early Shield (+0.20% move): Locks Stop at Entry + 0.13%
+        if max_fav_pct >= 0.0020 and camp.get("ratchet_stage", 0) < 0.25:
             camp["ratchet_stage"] = 0.25
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0020))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0013))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "EARLY_FEE_SHIELD_LOCKED"
 
-        # V9.7 Stage 0.5 Solid Profit Shield (+0.45% move): Locks Stop at Entry + 0.28% (+₹90+ guaranteed net win after GST!)
-        if max_fav_pct >= 0.0045 and camp.get("ratchet_stage", 0) < 0.5:
+        # Merged Stage 0.5 Slippage-Proof Shield (+0.32% move): Locks Stop at Entry + 0.20%
+        if max_fav_pct >= 0.0032 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0028))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0020))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "FEE_CLEARED_SHIELD_LOCKED"
 
-        # V9.5 Stage 1 Solid Profit Lock (+0.58% move): Locks Stop at Entry + 0.34% (+1.50%+ net win after GST)
-        if max_fav_pct >= 0.0058 and camp.get("ratchet_stage", 0) < 1:
+        # Merged Stage 1 Solid Profit Lock (+0.42% move): Locks Stop at Entry + 0.28%
+        if max_fav_pct >= 0.0042 and camp.get("ratchet_stage", 0) < 1:
             camp["ratchet_stage"] = 1
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0034))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0028))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_1_NET_PROFIT_LOCKED"
 
-        # V9.5 Stage 2 Surge Bank (+0.88% move): Banks 50% in cash & locks 50% Runner Stop at Entry + 0.60%
-        if max_fav_pct >= 0.0088 and camp.get("ratchet_stage", 0) < 2:
+        # Merged Stage 2 Surge Bank (+0.65% move): Banks 50% in cash & locks 50% Runner Stop at Entry + 0.50%
+        if max_fav_pct >= 0.0065 and camp.get("ratchet_stage", 0) < 2:
             camp["ratchet_stage"] = 2
             camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0060))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0050))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_2_50PCT_BANKED"
             half_notional = notional * 0.50
-            fees_half = half_notional * self.FEE_RATE * 2.0
-            camp["tp1_banked_pnl_inr"] = round(half_notional * 0.0088 - fees_half, 2)
+            fees_half = half_notional * self.MAKER_FEE_RATE * 2.0
+            camp["tp1_banked_pnl_inr"] = round(half_notional * 0.0065 - fees_half, 2)
 
-        # V9.5 Stage 3 Super Trail (+1.28% move): Locks Stop at Entry + 0.98% & trails 0.28% behind peak
-        if max_fav_pct >= 0.0128:
+        # Merged Stage 3 Super Trail (+1.00% move): Locks Stop at Entry + 0.85% & trails 0.20% behind peak
+        if max_fav_pct >= 0.0100:
             camp["ratchet_stage"] = 3
             camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0028))
-            floor_s = fmt_price(entry_p * (1.0 + direction * 0.0098))
+            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0020))
+            floor_s = fmt_price(entry_p * (1.0 + direction * 0.0085))
             camp["breakeven_stop"] = max(trail_s, floor_s) if side == "LONG" else min(trail_s, floor_s)
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_3_SUPER_TRAIL"
 
-        # V9.5 Stage 4 Home-Run Target (+1.85% move): Instant Jackpot Exit
-        tp_max = float(camp.get("tp2_price", entry_p * (1.0 + direction * 0.0185)))
+        # Merged Stage 4 Home-Run Target (+1.60% move): Instant Jackpot Exit
+        tp_max = float(camp.get("tp2_price", entry_p * (1.0 + direction * 0.0160)))
         if (side == "LONG" and live_price >= tp_max) or (side == "SHORT" and live_price <= tp_max):
             self.close_campaign(camp, exit_price=live_price, reason="STAGE_4_HOME_RUN_JACKPOT_WIN")
             return
 
-        # V9.7 2-Stage Stale-Momentum Defense (4m & 7m):
-        # - At 4 minutes (240s) if max_fav_pct < +0.18%, tighten stop from -0.46% to -0.30% (blocks -₹363 ADA-style 6m stops!)
-        # - At 7 minutes (420s) if still at Stage 0, tighten stop to -0.20% and exit on any >= +0.20% fee-cleared bounce!
+        # 20-Minute Time-Decay Fee-Cleared Scratch Exit (+0.18% bounce)
         age_sec = time.time() - float(camp.get("entry_ts", time.time()))
-        if camp.get("ratchet_stage", 0) == 0 and age_sec >= 420:
-            scratch_bounce = entry_p * (1.0 + direction * 0.0020)
-            if (side == "LONG" and live_price >= scratch_bounce) or (side == "SHORT" and live_price <= scratch_bounce):
-                self.close_campaign(camp, exit_price=live_price, reason="STALE_MOMENTUM_FEE_CLEARED_WIN")
-                return
-            tight_stale_stop = fmt_price(entry_p * (1.0 - direction * 0.0020))
-            if (side == "LONG" and tight_stale_stop > camp["effective_stop"]) or (
-                side == "SHORT" and tight_stale_stop < camp["effective_stop"]
-            ):
-                camp["effective_stop"] = tight_stale_stop
-        elif camp.get("ratchet_stage", 0) == 0 and age_sec >= 240 and max_fav_pct < 0.0018:
-            mid_stale_stop = fmt_price(entry_p * (1.0 - direction * 0.0030))
-            if (side == "LONG" and mid_stale_stop > camp["effective_stop"]) or (
-                side == "SHORT" and mid_stale_stop < camp["effective_stop"]
-            ):
-                camp["effective_stop"] = mid_stale_stop
-        elif camp.get("ratchet_stage", 0) < 1 and age_sec >= 1200:
-            scratch_p = entry_p * (1.0 + direction * 0.0022)
+        if camp.get("ratchet_stage", 0) < 1 and age_sec >= 1200:
+            scratch_p = entry_p * (1.0 + direction * 0.0018)
             if (side == "LONG" and live_price >= scratch_p) or (side == "SHORT" and live_price <= scratch_p):
                 self.close_campaign(camp, exit_price=live_price, reason="TIME_DECAY_FEE_CLEARED_WIN")
                 return
 
-        # Two-Tier Stop Check:
-        # - Before 90s hold: only exit on effective_stop (disaster stop or ratcheted profit lock)
-        # - Between 90s and 240s hold: if still at Stage 0, tighten effective stop to soft_stop (-0.46% / -0.52%)
-        if camp.get("ratchet_stage", 0) == 0 and self.WICK_SHIELD_HOLD_SEC <= age_sec < 240 and camp.get("soft_stop"):
+        # 60-Second Two-Tier Anti-Whipsaw Stop Check:
+        # - First 60s: hardware stop at -0.36% protects against sudden spikes without 1-tick spread stop-outs
+        # - After 60s: tightens to -0.28% soft_stop if still at Stage 0
+        if camp.get("ratchet_stage", 0) == 0 and age_sec >= self.WICK_SHIELD_HOLD_SEC and camp.get("soft_stop"):
             camp["effective_stop"] = camp["soft_stop"]
 
         stop_hit = (side == "LONG" and live_price <= camp["effective_stop"]) or (
@@ -1057,6 +1040,13 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             daemon.clients.remove(ws)
 
 
+@app.get("/v10", response_class=HTMLResponse)
+async def serve_v10_dashboard() -> HTMLResponse:
+    if DASHBOARD_HTML_PATH.exists():
+        return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
+    return HTMLResponse(content="<h1>APEX-OMEGA V10.5 MERGED LIVE ONLINE</h1>", status_code=200)
+
+
 @app.get("/health")
 @app.head("/health")
 @app.get("/ping")
@@ -1218,6 +1208,8 @@ if os.path.exists(static_dir):
         idx_path = os.path.join(static_dir, "index.html")
         if os.path.exists(idx_path):
             return FileResponse(idx_path)
+        if DASHBOARD_HTML_PATH.exists():
+            return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
         return FileResponse(os.path.join(static_dir, "404.html"))
 
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="dashboard")
