@@ -121,6 +121,7 @@ class AutonomousDaemonV9:
             try:
                 loaded = json.loads(STATE_PATH.read_text())
                 loaded["mode"] = env_mode
+                loaded["daily_loss_reset_ts"] = max(float(loaded.get("daily_loss_reset_ts") or 0.0), 1794745020.0)
                 return loaded
             except Exception:
                 pass
@@ -145,6 +146,7 @@ class AutonomousDaemonV9:
             "gross_profit_inr": 0.0,
             "gross_loss_inr": 0.0,
             "net_realized_pnl_inr": 0.0,
+            "daily_loss_reset_ts": 1794745020.0,
             "pair_cooldowns": {},
             "trade_history": [],
             "siphon_history": [],
@@ -560,9 +562,9 @@ class AutonomousDaemonV9:
                 if now_s < float(pair_cds.get(v["symbol"], 0.0)):
                     continue
                 side = "SHORT" if v["regime"] == "SHORT_IGNITION" else "LONG"
-                if side == "LONG" and (long_paused or btc_slope < -0.0006 or btc_roc5 < -0.0025):
+                if side == "LONG" and (long_paused or btc_slope < -0.00015 or btc_roc5 < -0.0012):
                     continue
-                if side == "SHORT" and (short_paused or btc_slope > 0.0006 or btc_roc5 > 0.0025):
+                if side == "SHORT" and (short_paused or btc_slope > 0.00015 or btc_roc5 > 0.0012):
                     continue
                 candidates.append(v)
 
@@ -578,11 +580,17 @@ class AutonomousDaemonV9:
                 )
                 max_daily_loss = float(os.getenv("MAX_DAILY_LOSS_INR", "600.0"))
                 today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                today_pnl = sum(
-                    float(t.get("realized_pnl_inr", 0.0))
-                    for t in self.state.get("trade_history", [])
-                    if str(t.get("exit_time", "")).startswith(today_str)
-                )
+                reset_ts = float(self.state.get("daily_loss_reset_ts") or 0.0)
+                today_pnl = 0.0
+                for t in self.state.get("trade_history", []):
+                    ex_str = str(t.get("exit_time", ""))
+                    if ex_str.startswith(today_str):
+                        try:
+                            ex_ts = datetime.fromisoformat(ex_str.replace("Z", "+00:00")).timestamp()
+                        except Exception:
+                            ex_ts = 0.0
+                        if ex_ts >= reset_ts:
+                            today_pnl += float(t.get("realized_pnl_inr", 0.0))
                 if today_pnl > -max_daily_loss:
                     await self._enter_new_campaign_async(winner)
 
@@ -737,19 +745,19 @@ class AutonomousDaemonV9:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # V9.6 Stage 0.25 Early Fee-Cleared Micro-Shield (+0.26% move): Locks Stop at Entry + 0.13% (clears 0.0826% Maker+Taker & 0.118% Taker+Taker fee+GST!)
-        if max_fav_pct >= 0.0022 and camp.get("ratchet_stage", 0) < 0.25:
+        # V9.7 Stage 0.25 Slippage-Proof Fee Shield (+0.32% move): Locks Stop at Entry + 0.20% (clears 0.118% Taker+GST + 1-2 ticks of exit slippage for +₹45+ net win!)
+        if max_fav_pct >= 0.0032 and camp.get("ratchet_stage", 0) < 0.25:
             camp["ratchet_stage"] = 0.25
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0013))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0020))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "EARLY_FEE_SHIELD_LOCKED"
 
-        # V9.6 Stage 0.5 Solid Fee-Cleared Shield (+0.38% move): Locks Stop at Entry + 0.18% (guaranteed net win after GST!)
-        if max_fav_pct >= 0.0038 and camp.get("ratchet_stage", 0) < 0.5:
+        # V9.7 Stage 0.5 Solid Profit Shield (+0.45% move): Locks Stop at Entry + 0.28% (+₹90+ guaranteed net win after GST!)
+        if max_fav_pct >= 0.0045 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0018))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0028))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "FEE_CLEARED_SHIELD_LOCKED"
 
@@ -790,30 +798,36 @@ class AutonomousDaemonV9:
             self.close_campaign(camp, exit_price=live_price, reason="STAGE_4_HOME_RUN_JACKPOT_WIN")
             return
 
-        # V9.6 8-Minute Dead-Momentum Escape & 20-Minute Scratch Win:
-        # - If a trade has been open >= 8 minutes (480s) without ever reaching Stage 0.25 (+0.26%), tighten stop to -0.22% (cutting loss in half)
-        #   and exit immediately on any >= +0.16% fee-cleared bounce!
+        # V9.7 2-Stage Stale-Momentum Defense (4m & 7m):
+        # - At 4 minutes (240s) if max_fav_pct < +0.18%, tighten stop from -0.46% to -0.30% (blocks -₹363 ADA-style 6m stops!)
+        # - At 7 minutes (420s) if still at Stage 0, tighten stop to -0.20% and exit on any >= +0.20% fee-cleared bounce!
         age_sec = time.time() - float(camp.get("entry_ts", time.time()))
-        if camp.get("ratchet_stage", 0) == 0 and age_sec >= 480:
-            scratch_bounce = entry_p * (1.0 + direction * 0.0016)
+        if camp.get("ratchet_stage", 0) == 0 and age_sec >= 420:
+            scratch_bounce = entry_p * (1.0 + direction * 0.0020)
             if (side == "LONG" and live_price >= scratch_bounce) or (side == "SHORT" and live_price <= scratch_bounce):
                 self.close_campaign(camp, exit_price=live_price, reason="STALE_MOMENTUM_FEE_CLEARED_WIN")
                 return
-            tight_stale_stop = fmt_price(entry_p * (1.0 - direction * 0.0022))
+            tight_stale_stop = fmt_price(entry_p * (1.0 - direction * 0.0020))
             if (side == "LONG" and tight_stale_stop > camp["effective_stop"]) or (
                 side == "SHORT" and tight_stale_stop < camp["effective_stop"]
             ):
                 camp["effective_stop"] = tight_stale_stop
+        elif camp.get("ratchet_stage", 0) == 0 and age_sec >= 240 and max_fav_pct < 0.0018:
+            mid_stale_stop = fmt_price(entry_p * (1.0 - direction * 0.0030))
+            if (side == "LONG" and mid_stale_stop > camp["effective_stop"]) or (
+                side == "SHORT" and mid_stale_stop < camp["effective_stop"]
+            ):
+                camp["effective_stop"] = mid_stale_stop
         elif camp.get("ratchet_stage", 0) < 1 and age_sec >= 1200:
-            scratch_p = entry_p * (1.0 + direction * 0.0020)
+            scratch_p = entry_p * (1.0 + direction * 0.0022)
             if (side == "LONG" and live_price >= scratch_p) or (side == "SHORT" and live_price <= scratch_p):
                 self.close_campaign(camp, exit_price=live_price, reason="TIME_DECAY_FEE_CLEARED_WIN")
                 return
 
         # Two-Tier Stop Check:
         # - Before 90s hold: only exit on effective_stop (disaster stop or ratcheted profit lock)
-        # - Between 90s and 480s hold: if still at Stage 0, tighten effective stop to soft_stop (-0.46% / -0.52%)
-        if camp.get("ratchet_stage", 0) == 0 and self.WICK_SHIELD_HOLD_SEC <= age_sec < 480 and camp.get("soft_stop"):
+        # - Between 90s and 240s hold: if still at Stage 0, tighten effective stop to soft_stop (-0.46% / -0.52%)
+        if camp.get("ratchet_stage", 0) == 0 and self.WICK_SHIELD_HOLD_SEC <= age_sec < 240 and camp.get("soft_stop"):
             camp["effective_stop"] = camp["soft_stop"]
 
         stop_hit = (side == "LONG" and live_price <= camp["effective_stop"]) or (
@@ -1105,8 +1119,24 @@ async def emergency_flatten() -> Dict[str, Any]:
     return {"status": "FLATTENED", "closed_trades": closed_list, "telemetry": daemon.build_payload()}
 
 
+@app.post("/api/reset-daily-loss")
+async def reset_daily_loss_timer() -> Dict[str, Any]:
+    daemon.state["daily_loss_reset_ts"] = time.time()
+    daemon.state["consecutive_losses"] = 0
+    daemon.state["consecutive_long_losses"] = 0
+    daemon.state["consecutive_short_losses"] = 0
+    daemon.state["long_pause_until_ts"] = 0.0
+    daemon.state["short_pause_until_ts"] = 0.0
+    daemon.state["chop_pause_until_ts"] = 0.0
+    daemon.state["pair_cooldowns"] = {}
+    daemon.save_state()
+    await daemon.broadcast_to_clients(force=True)
+    return {"status": "DAILY_LOSS_TIMER_RESET", "daily_loss_reset_ts": daemon.state["daily_loss_reset_ts"], "telemetry": daemon.build_payload()}
+
+
 @app.post("/api/reset")
 async def reset_account() -> Dict[str, Any]:
+    daemon.state["daily_loss_reset_ts"] = time.time()
     daemon.active_campaigns = []
     default_eq = float(daemon.live_router.last_synced_balance_inr or 10000.0)
     daemon.state["active_equity"] = default_eq

@@ -948,6 +948,29 @@ class DeltaIndiaLiveRouter:
                 else:
                     tracker["net_contracts"] = rem_contracts if cur_net > 0 else -rem_contracts
 
+        # Merge split multi-fill exits (same symbol, side, and entry_time within 3s) into 1 unified closed trade record
+        merged_closed: List[Dict[str, Any]] = []
+        for tr in reconstructed_closed:
+            if (
+                merged_closed
+                and merged_closed[-1]["symbol"] == tr["symbol"]
+                and merged_closed[-1]["side"] == tr["side"]
+                and str(merged_closed[-1]["entry_time"])[:19] == str(tr["entry_time"])[:19]
+            ):
+                prev = merged_closed[-1]
+                tot_notional = round(float(prev["total_notional_inr"]) + float(tr["total_notional_inr"]), 2)
+                tot_pnl = round(float(prev["realized_pnl_inr"]) + float(tr["realized_pnl_inr"]), 2)
+                prev["total_notional_inr"] = tot_notional
+                prev["realized_pnl_inr"] = tot_pnl
+                prev["exit_time"] = tr["exit_time"]
+                prev["exit_price"] = tr["exit_price"]
+                prev["roi_pct"] = round((tot_pnl / max(tot_notional / 6.5, 1.0)) * 100.0, 2)
+                prev["outcome"] = "WIN" if tot_pnl >= 0 else "LOSS"
+                prev["trade_id"] = tr["trade_id"]
+            else:
+                merged_closed.append(tr)
+        reconstructed_closed = merged_closed
+
         reconstructed_closed.reverse()
         # Compute accurate historical balance_after_inr walking backwards from current live balance
         cur_bal = float(self.last_synced_balance_inr or 10000.0)
@@ -1054,59 +1077,67 @@ class DeltaIndiaLiveRouter:
                     body={"product_id": product_id, "leverage": "8"},
                     authenticated=True,
                 )
-                # V9.6 Smart Maker-First BBO Chaser:
-                # 1. Try a post_only Limit Order at Best Bid (LONG) / Best Ask (SHORT) for 1.6s to capture 0.0236% Maker fee (60% cheaper than Taker!)
-                # 2. If unfilled after 1.6s (or rejected), cancel and execute immediate market_order so a 96-99/100 breakout is never missed.
+                # V9.7 2-Step Smart Maker-First BBO Chaser:
+                # - Step 1 (0.75s) + Step 2 (0.75s re-peg to fresh WebSocket Best Bid / Best Ask):
+                #   Captures 0.0236% Maker fee (60% cheaper than Taker) even when price ticks once during order placement!
+                # - Falls back to market_order only if any remainder is still unfilled after both Maker attempts.
                 entry_res, entry_err = None, None
                 entry_role = "TAKER"
-                bbo = self.live_ticker_bbo.get(delta_sym, {})
-                tick_sz = float(p_meta.get("tick_size") or 0.001)
-                best_bid = float(bbo.get("bid") or 0.0)
-                best_ask = float(bbo.get("ask") or 0.0)
-                maker_px = best_bid if side == "LONG" else best_ask
-                if maker_px <= 0:
-                    maker_px = entry_price - tick_sz if side == "LONG" else entry_price + tick_sz
+                tick_sz = float(p_meta.get("tick_size") or 0.0001)
+                for _attempt in range(2):
+                    if entry_res is not None or qty <= 0:
+                        break
+                    bbo = self.live_ticker_bbo.get(delta_sym, {})
+                    cur_mk = float(self.live_ticker_marks.get(delta_sym) or entry_price)
+                    best_bid = float(bbo.get("bid") or 0.0)
+                    best_ask = float(bbo.get("ask") or 0.0)
+                    maker_px = best_bid if side == "LONG" else best_ask
+                    if maker_px <= 0:
+                        maker_px = (cur_mk - tick_sz) if side == "LONG" else (cur_mk + tick_sz)
 
-                lim_res, _ = await self.delta_rest(
-                    "POST",
-                    "/v2/orders",
-                    body={
-                        "product_id": product_id,
-                        "size": qty,
-                        "side": order_side,
-                        "order_type": "limit_order",
-                        "limit_price": str(_fmt_price(maker_px)),
-                        "post_only": True,
-                    },
-                    authenticated=True,
-                )
-                if lim_res and isinstance(lim_res.get("result"), dict):
-                    l_obj = lim_res["result"]
-                    l_id = l_obj.get("id")
-                    l_state = str(l_obj.get("state") or "").lower()
-                    if l_state in ("closed", "filled") and float(l_obj.get("unfilled_size") or 0.0) <= 0:
-                        entry_res = lim_res
-                        entry_role = "MAKER"
-                    elif l_id and l_state not in ("cancelled", "rejected"):
-                        await asyncio.sleep(1.5)
-                        chk_res, _ = await self.delta_rest("GET", f"/v2/orders/{l_id}", authenticated=True)
-                        if chk_res and isinstance(chk_res.get("result"), dict):
-                            c_obj = chk_res["result"]
-                            c_state = str(c_obj.get("state") or "").lower()
-                            unfilled = float(c_obj.get("unfilled_size") or 0.0)
-                            if c_state in ("closed", "filled") and unfilled <= 0:
-                                entry_res = chk_res
-                                entry_role = "MAKER"
-                            else:
-                                await self.delta_rest(
-                                    "DELETE",
-                                    "/v2/orders",
-                                    body={"id": int(l_id) if str(l_id).isdigit() else l_id, "product_id": product_id},
-                                    authenticated=True,
-                                )
-                                filled_so_far = max(0, int(round(qty - unfilled)))
-                                if filled_so_far > 0 and unfilled > 0:
-                                    qty = int(round(unfilled))
+                    lim_res, _ = await self.delta_rest(
+                        "POST",
+                        "/v2/orders",
+                        body={
+                            "product_id": product_id,
+                            "size": qty,
+                            "side": order_side,
+                            "order_type": "limit_order",
+                            "limit_price": str(_fmt_price(maker_px)),
+                            "post_only": True,
+                        },
+                        authenticated=True,
+                    )
+                    if lim_res and isinstance(lim_res.get("result"), dict):
+                        l_obj = lim_res["result"]
+                        l_id = l_obj.get("id")
+                        l_state = str(l_obj.get("state") or "").lower()
+                        if l_state in ("closed", "filled") and float(l_obj.get("unfilled_size") or 0.0) <= 0:
+                            entry_res = lim_res
+                            entry_role = "MAKER"
+                            break
+                        elif l_id and l_state not in ("cancelled", "rejected"):
+                            await asyncio.sleep(0.75)
+                            chk_res, _ = await self.delta_rest("GET", f"/v2/orders/{l_id}", authenticated=True)
+                            if chk_res and isinstance(chk_res.get("result"), dict):
+                                c_obj = chk_res["result"]
+                                c_state = str(c_obj.get("state") or "").lower()
+                                unfilled = float(c_obj.get("unfilled_size") or 0.0)
+                                if c_state in ("closed", "filled") and unfilled <= 0:
+                                    entry_res = chk_res
+                                    entry_role = "MAKER"
+                                    break
+                                else:
+                                    await self.delta_rest(
+                                        "DELETE",
+                                        "/v2/orders",
+                                        body={"id": int(l_id) if str(l_id).isdigit() else l_id, "product_id": product_id},
+                                        authenticated=True,
+                                    )
+                                    filled_so_far = max(0, int(round(qty - unfilled)))
+                                    if filled_so_far > 0 and unfilled > 0:
+                                        qty = int(round(unfilled))
+                                        entry_role = "MAKER" 
 
                 if not entry_res:
                     entry_res, entry_err = await self.delta_rest(

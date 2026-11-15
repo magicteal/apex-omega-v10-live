@@ -1,7 +1,7 @@
 {
   "mode": "LIVE",
   "starting_equity": 10000.0,
-  "active_equity": 10000.0,
+  "active_equity": 8232.4,
   "peak_equity": 10000.0,
   "vault_balance": 0.0,
   "principal_siphoned": false,
@@ -12,15 +12,39 @@
   "long_pause_until_ts": 0.0,
   "short_pause_until_ts": 0.0,
   "chop_pause_until_ts": 0.0,
-  "wins": 0,
+  "wins": 1,
   "losses": 0,
-  "total_closed_trades": 0,
-  "win_rate_pct": 0.0,
-  "gross_profit_inr": 0.0,
-  "gross_loss_inr": 0.0,
-  "net_realized_pnl_inr": 0.0,
-  "pair_cooldowns": {},
-  "trade_history": [],
+  "total_closed_trades": 1,
+  "win_rate_pct": 100.0,
+  "gross_profit_inr": 34.51,
+  "gross_loss_inr": 0,
+  "net_realized_pnl_inr": 34.51,
+  "pair_cooldowns": {
+    "DOGE/USDT:USDT": 1794745339.0789149
+  },
+  "trade_history": [
+    {
+      "trade_id": "TRD-744739078",
+      "symbol": "DOGE/USDT:USDT",
+      "delta_symbol": "DOGEUSD",
+      "side": "LONG",
+      "setup_type": "DUAL_CORE_PULLBACK_LONG",
+      "confluence_score": 97,
+      "entry_time": "2026-11-15T12:12:19.078583+00:00",
+      "exit_time": "2026-11-15T12:12:19.078916+00:00",
+      "entry_price": 0.05909,
+      "exit_price": 0.059198,
+      "max_stage_reached": "EARLY_FEE_SHIELD_LOCKED",
+      "filled_units": 1,
+      "total_notional_inr": 53286.28,
+      "realized_pnl_inr": 34.51,
+      "roi_pct": 0.42,
+      "exit_reason": "STAGE_0.25_EARLY_FEE_SHIELD_WIN",
+      "balance_after_inr": 8232.4,
+      "outcome": "WIN",
+      "is_live_delta": false
+    }
+  ],
   "siphon_history": [],
   "active_campaign": {
     "trade_id": "TRD-731425115",
@@ -116,6 +140,53 @@
         }
       ],
       "mark_ts_ms": 1794731425115.9238
+    },
+    {
+      "trade_id": "TRD-744739079",
+      "symbol": "ADA/USDT:USDT",
+      "delta_symbol": "ADAUSD",
+      "side": "LONG",
+      "setup_type": "DUAL_CORE_PULLBACK_LONG",
+      "confluence_score": 97,
+      "entry_time": "2026-11-15T12:12:19.079068+00:00",
+      "entry_ts": 1794744489.0790887,
+      "entry_price_raw": 0.154996,
+      "mark_price_raw": 0.15485,
+      "base_entry_price": 0.154996,
+      "current_price": 0.15485,
+      "highest_extreme": 0.154996,
+      "atr_at_entry": 0.001,
+      "tp1_price": 0.15636,
+      "tp2_price": 0.157863,
+      "tp1_hit": false,
+      "tp1_banked_pnl_inr": 0.0,
+      "ratchet_stage": 0,
+      "chandelier_stop": 0.154035,
+      "soft_stop": 0.154283,
+      "breakeven_locked": false,
+      "breakeven_stop": null,
+      "effective_stop": 0.154531,
+      "filled_units": 1,
+      "max_stage_reached": "V9.5_SNIPER_OPEN",
+      "total_notional_inr": 53510.6,
+      "total_unrealized_pnl_inr": -50.4,
+      "coin_qty": 4061.63043297,
+      "rvol_at_entry": 1.35,
+      "tranches": [
+        {
+          "id": 1,
+          "label": "V9.5_FEE_SHIELD_CORE (6.5X SNIPER)",
+          "weight_pct": 1.0,
+          "trigger_atr_mult": 0.0,
+          "trigger_price": 0.154996,
+          "filled": true,
+          "fill_price": 0.154996,
+          "notional_inr": 53510.6,
+          "unrealized_pnl_inr": -50.4,
+          "fee_inr": 31.57
+        }
+      ],
+      "mark_ts_ms": 1794744739079.0952
     }
   ]
 }

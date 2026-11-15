@@ -1,15 +1,14 @@
 """
-APEX-OMEGA OS V9.6 — Institutional Triple-Confluence & Maker-First Fee-Shield Engine
-Engineered from Forensic Audit of 35 Real Delta Exchange Live Campaigns & 30-Day Backtest:
-1. Pure Tier-1 High-Beta Alpha Pair Priority (DOGE, SOL, LINK, ADA — 78.1% to 100% 30-day win rates):
-   - Requires Score >= 96/100, KER >= 0.22, RVOL >= 1.15, true_atr_pct >= 0.0018, ADX-14 >= 20.
-2. Strict Chop & Wick Shield on Tier-2 Pairs (BTC, ETH, BNB, SUI, XRP, AVAX):
-   - Requires Score >= 98/100, KER >= 0.32, RVOL >= 1.28, true_atr_pct >= 0.0022, ADX-14 >= 22.
-3. Multi-Timeframe (MTF) 15-Minute Synthetic Trend Alignment + ADX-14 Directional Filter:
-   - Blocks counter-trend 5m scalps when the 15-minute macro structure (EMA-63 vs EMA-150 & 15m slope) disagrees.
-   - Blocks dead-chop entries using Wilder's ADX-14 & Choppiness Index filter.
-4. Candle Body & Wick Absorption Quality Gate:
-   - Requires strong rejection wick or >= 45% directional candle body so entries never chase exhausted tops/bottoms.
+APEX-OMEGA OS V9.7 — Anti-Spike-Chase, Closed-Bar Confirmed & 2-Step Maker-First BBO Engine
+Engineered from Forensic Audit of Today's Live Trades (LINK, ADA, DOGE x2) + 35 Real Delta Campaigns:
+1. Anti-Top-Buying & Anti-Bottom-Selling Extension Gate (`Core B` Pullback Continuation):
+   - Blocks buying top of 5m green spikes: requires `-0.85 <= z_score <= +0.32` for LONG (`-0.32 <= z_score <= +0.85` for SHORT),
+     price within `<= 0.25%` of EMA-9 (`dist_ema9_pct <= 0.0025`), and `cur_range <= 1.65 * atr14` (never chases a blown-out spike bar).
+2. Closed-Candle Confirmation (`ohlcv[-2]` vs `ohlcv[-1]`):
+   - Prevents mid-candle WebSocket tick head-fakes by requiring the LAST CLOSED 5m bar (`[-2]`) OR a confirmed 2-bar structure
+     to hold EMA-9/EMA-21 support with real directional body/wick absorption.
+3. 15-Minute Multi-Timeframe (MTF) Alignment + Wilder ADX-14 >= 20/22 + High-Wick SOL/BTC Shield:
+   - Blocks counter-trend 5m scalps when 15m macro structure (`EMA-63` vs `EMA-150` & 15m slope) disagrees.
 """
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any
@@ -128,8 +127,8 @@ class SqueezeEngine:
 
         # 15-Minute Multi-Timeframe (MTF) Structural Alignment
         ema63_slope = (float(ema63[-1]) - float(ema63[max(0, n - 7)])) / max(float(ema63[max(0, n - 7)]), 1e-9)
-        mtf_bull_ok = float(ema63[-1]) >= float(ema150[-1]) * 0.999 and ema63_slope >= 0.00025
-        mtf_bear_ok = float(ema63[-1]) <= float(ema150[-1]) * 1.001 and ema63_slope <= -0.00025
+        mtf_bull_ok = float(ema63[-1]) >= float(ema150[-1]) * 0.9995 and ema63_slope >= 0.00028
+        mtf_bear_ok = float(ema63[-1]) <= float(ema150[-1]) * 1.0005 and ema63_slope <= -0.00028
 
         win = min(20, n)
         typ = (high[-win:] + low[-win:] + close[-win:]) / 3.0
@@ -174,26 +173,41 @@ class SqueezeEngine:
         ker = round(net_move / max(path_sum, 1e-12), 2)
 
         cur_range = max(float(high[-1] - low[-1]), 1e-12)
+        prev_range = max(float(high[-2] - low[-2]), 1e-12)
         body_ratio = abs(float(close[-1]) - float(open_p[-1])) / cur_range
+        prev_body_ratio = abs(float(close[-2]) - float(open_p[-2])) / prev_range
         lower_wick = (min(float(open_p[-1]), float(close[-1])) - float(low[-1])) / cur_range
         upper_wick = (float(high[-1]) - max(float(open_p[-1]), float(close[-1]))) / cur_range
 
+        # Anti-Spike-Chase Gate: never enter on an already blown-out candle (> 1.65x ATR) or > 0.25% extended past EMA-9
+        not_spike_bar = cur_range <= float(atr14[-1]) * 1.65
+        dist_ema9_bull = (float(close[-1]) - float(ema9[-1])) / max(float(ema9[-1]), 1e-9)
+        dist_ema9_bear = (float(ema9[-1]) - float(close[-1])) / max(float(ema9[-1]), 1e-9)
+
+        # Closed-Candle + Live-Bar Confirmation (prevents intrabar tick head-fakes)
+        closed_bull_confirm = float(close[-2]) >= float(open_p[-2]) or (float(close[-2]) >= float(ema21[-2]) and prev_body_ratio <= 0.55)
+        closed_bear_confirm = float(close[-2]) <= float(open_p[-2]) or (float(close[-2]) <= float(ema21[-2]) and prev_body_ratio <= 0.55)
+
         green_bounce = (
-            float(close[-1]) > float(open_p[-1])
+            not_spike_bar
+            and closed_bull_confirm
+            and float(close[-1]) > float(open_p[-1])
             and float(close[-1]) > float(close[-2])
-            and float(low[-1]) >= float(low[-2]) * 0.9985
-            and (body_ratio >= 0.42 or lower_wick >= 0.32)
+            and float(low[-1]) >= float(low[-2]) * 0.9990
+            and (body_ratio >= 0.45 or lower_wick >= 0.35)
         )
         red_bounce = (
-            float(close[-1]) < float(open_p[-1])
+            not_spike_bar
+            and closed_bear_confirm
+            and float(close[-1]) < float(open_p[-1])
             and float(close[-1]) < float(close[-2])
-            and float(high[-1]) <= float(high[-2]) * 1.0015
-            and (body_ratio >= 0.42 or upper_wick >= 0.32)
+            and float(high[-1]) <= float(high[-2]) * 1.0010
+            and (body_ratio >= 0.45 or upper_wick >= 0.35)
         )
 
         is_tier1 = symbol in TIER1_ALPHA_SYMBOLS
-        tier_bonus = 2 if is_tier1 else 0
         is_high_wick_pair = symbol in ("SOL/USDT:USDT", "BTC/USDT:USDT")
+        tier_bonus = 2 if is_tier1 else 0
         min_ker_gate = 0.25 if is_high_wick_pair else (0.22 if is_tier1 else 0.32)
         min_atr_gate = 0.0020 if is_high_wick_pair else (0.0018 if is_tier1 else 0.0022)
         min_rvol_gate = 1.22 if is_high_wick_pair else (1.15 if is_tier1 else 1.28)
@@ -206,86 +220,89 @@ class SqueezeEngine:
         )
 
         # =========================================================================
-        # CORE A: TREND-ALIGNED RSI-2 / VWAP ABSORPTION SNIPER (V9.6 MTF + ADX)
+        # CORE A: TREND-ALIGNED RSI-2 / VWAP ABSORPTION SNIPER (V9.7 Anti-Spike)
         # =========================================================================
         core_a_bull_trend = (
             vol_gate_ok
             and mtf_bull_ok
-            and float(close[-1]) >= float(ema200[-1]) * 0.997
+            and float(close[-1]) >= float(ema200[-1]) * 0.998
             and float(ema21[-1]) > float(ema50[-1])
             and float(ema50[-1]) >= float(ema100[-1])
-            and ema_slope >= 0.00038
-            and roc5 > -0.0045
+            and ema_slope >= 0.00040
+            and roc5 > -0.0040
         )
         core_a_bear_trend = (
             vol_gate_ok
             and mtf_bear_ok
-            and float(close[-1]) <= float(ema200[-1]) * 1.003
+            and float(close[-1]) <= float(ema200[-1]) * 1.002
             and float(ema21[-1]) < float(ema50[-1])
             and float(ema50[-1]) <= float(ema100[-1])
-            and ema_slope <= -0.00038
-            and roc5 < 0.0045
+            and ema_slope <= -0.00040
+            and roc5 < 0.0040
         )
 
         score_a_bull = 38 + tier_bonus
         if core_a_bull_trend:
             score_a_bull += 22
-        if rsi2 <= 22:
+        if rsi2 <= 20:
             score_a_bull += 19
-        if z_score <= -1.00:
+        if z_score <= -1.05:
             score_a_bull += 11
-        if green_bounce or lower_wick >= 0.32:
+        if green_bounce or lower_wick >= 0.35:
             score_a_bull += 10
-        if rvol >= 1.18 and adx14 >= 22.0:
+        if rvol >= 1.20 and adx14 >= 22.0:
             score_a_bull += 6
 
         score_a_bear = 38 + tier_bonus
         if core_a_bear_trend:
             score_a_bear += 22
-        if rsi2 >= 78:
+        if rsi2 >= 80:
             score_a_bear += 19
-        if z_score >= 1.00:
+        if z_score >= 1.05:
             score_a_bear += 11
-        if red_bounce or upper_wick >= 0.32:
+        if red_bounce or upper_wick >= 0.35:
             score_a_bear += 10
-        if rvol >= 1.18 and adx14 >= 22.0:
+        if rvol >= 1.20 and adx14 >= 22.0:
             score_a_bear += 6
 
         # =========================================================================
-        # CORE B: 3-BAR EMA-9 / EMA-21 PULLBACK CONTINUATION SURGE (V9.6 MTF + ADX)
+        # CORE B: 3-BAR EMA-9 / EMA-21 PULLBACK CONTINUATION SURGE (V9.7 Anti-Chase)
         # =========================================================================
         core_b_bull_stack = (
             vol_gate_ok
             and mtf_bull_ok
-            and float(close[-1]) >= float(ema200[-1]) * 0.998
-            and float(ema9[-1]) >= float(ema21[-1]) * 0.9995
+            and float(close[-1]) >= float(ema200[-1]) * 0.9985
+            and float(ema9[-1]) >= float(ema21[-1]) * 0.9998
             and float(ema21[-1]) > float(ema50[-1])
-            and ema_slope >= 0.00042
+            and ema_slope >= 0.00045
         )
         core_b_bear_stack = (
             vol_gate_ok
             and mtf_bear_ok
-            and float(close[-1]) <= float(ema200[-1]) * 1.002
-            and float(ema9[-1]) <= float(ema21[-1]) * 1.0005
+            and float(close[-1]) <= float(ema200[-1]) * 1.0015
+            and float(ema9[-1]) <= float(ema21[-1]) * 1.0002
             and float(ema21[-1]) < float(ema50[-1])
-            and ema_slope <= -0.00042
+            and ema_slope <= -0.00045
         )
 
         recent_low_3 = min(float(low[-1]), float(low[-2]), float(low[-3]))
         recent_high_3 = max(float(high[-1]), float(high[-2]), float(high[-3]))
         bull_pullback_touch = (
-            recent_low_3 <= float(ema21[-1]) * 1.0030
+            recent_low_3 <= float(ema21[-1]) * 1.0022
             and green_bounce
             and float(close[-1]) >= float(ema9[-1])
+            and dist_ema9_bull <= 0.0025
         )
         bear_pullback_touch = (
-            recent_high_3 >= float(ema21[-1]) * 0.9970
+            recent_high_3 >= float(ema21[-1]) * 0.9978
             and red_bounce
             and float(close[-1]) <= float(ema9[-1])
+            and dist_ema9_bear <= 0.0025
         )
 
-        bull_not_overext = -1.25 <= z_score <= 0.80 and 45 <= rsi14 <= 67
-        bear_not_overext = -0.80 <= z_score <= 1.25 and 33 <= rsi14 <= 55
+        # V9.7 Strict Anti-Chase Z-Score & RSI-14 Window (prevents buying extended tops like DOGE $0.05927 / ADA $0.155)
+        bull_not_overext = -0.85 <= z_score <= 0.32 and 46 <= rsi14 <= 62
+        bear_not_overext = -0.32 <= z_score <= 0.85 and 38 <= rsi14 <= 54
 
         score_b_bull = 42 + tier_bonus
         if core_b_bull_stack:
@@ -294,7 +311,7 @@ class SqueezeEngine:
             score_b_bull += 16
         if bull_not_overext:
             score_b_bull += 11
-        if rvol >= 1.15 and adx14 >= 20.0:
+        if rvol >= 1.18 and adx14 >= 21.0:
             score_b_bull += 5
 
         score_b_bear = 42 + tier_bonus
@@ -304,16 +321,16 @@ class SqueezeEngine:
             score_b_bear += 16
         if bear_not_overext:
             score_b_bear += 11
-        if rvol >= 1.15 and adx14 >= 20.0:
+        if rvol >= 1.18 and adx14 >= 21.0:
             score_b_bear += 5
 
         bull_score = max(score_a_bull, score_b_bull)
         bear_score = max(score_a_bear, score_b_bear)
         min_req_score = 96 if is_tier1 else 98
 
-        long_a_ok = core_a_bull_trend and green_bounce and (rsi2 <= 22 or z_score <= -1.00) and score_a_bull >= min_req_score
+        long_a_ok = core_a_bull_trend and green_bounce and (rsi2 <= 20 or z_score <= -1.05) and score_a_bull >= min_req_score
         long_b_ok = core_b_bull_stack and bull_pullback_touch and bull_not_overext and score_b_bull >= min_req_score
-        short_a_ok = core_a_bear_trend and red_bounce and (rsi2 >= 78 or z_score >= 1.00) and score_a_bear >= min_req_score
+        short_a_ok = core_a_bear_trend and red_bounce and (rsi2 >= 80 or z_score >= 1.05) and score_a_bear >= min_req_score
         short_b_ok = core_b_bear_stack and bear_pullback_touch and bear_not_overext and score_b_bear >= min_req_score
 
         if long_a_ok or long_b_ok:
