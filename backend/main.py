@@ -25,7 +25,6 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from core.squeeze_engine import SqueezeEngine, TIER1_ALPHA_SYMBOLS
@@ -48,7 +47,6 @@ UNIVERSE_MAP = [
 SCANNER_TO_DELTA_SYM = {item[0]: item[3] for item in UNIVERSE_MAP}
 
 STATE_PATH = Path(__file__).parent / "bot_state.json"
-DASHBOARD_HTML_PATH = Path(__file__).parent / "dashboard_v10.html"
 BOOT_TIME = time.time()
 
 
@@ -940,15 +938,6 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             daemon.clients.remove(ws)
 
 
-@app.get("/", response_class=HTMLResponse)
-@app.head("/")
-async def serve_visual_dashboard() -> HTMLResponse:
-    """Always serves the interactive V10 Live Command Center UI at GET / so visiting the Render URL never dumps raw JSON!"""
-    if DASHBOARD_HTML_PATH.exists():
-        return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
-    return HTMLResponse(content="<h1>APEX-OMEGA V9.5 / V10 LIVE ONLINE</h1>", status_code=200)
-
-
 @app.get("/health")
 @app.head("/health")
 @app.get("/ping")
@@ -1075,3 +1064,27 @@ async def restore_server_state(req: RestoreStateRequest) -> Dict[str, Any]:
         daemon.save_state()
         return {"status": "RESTORED_FROM_BACKUP", "telemetry": daemon.build_payload()}
     return {"status": "NO_RESTORE_NEEDED", "telemetry": daemon.build_payload()}
+
+
+# Mount unified dashboard static build if available
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if not os.path.exists(static_dir):
+    static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "backend", "static")
+if not os.path.exists(static_dir):
+    static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+
+if os.path.exists(static_dir):
+    from fastapi.staticfiles import StaticFiles
+    from starlette.responses import FileResponse
+
+    @app.get("/")
+    @app.head("/")
+    async def serve_index():
+        idx_path = os.path.join(static_dir, "index.html")
+        if os.path.exists(idx_path):
+            return FileResponse(idx_path)
+        return FileResponse(os.path.join(static_dir, "404.html"))
+
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="dashboard")
+    print(f"Dashboard static files mounted successfully from: {static_dir}")
+
