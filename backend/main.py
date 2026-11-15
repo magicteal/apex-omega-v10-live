@@ -84,8 +84,11 @@ def fmt_price(val: float) -> float:
 
 
 class AutonomousDaemonV9:
-    # Exact Delta Exchange India Taker Fee (0.05%) + 18% GST = 0.059% per side (0.118% round-trip)
+    # Exact Delta Exchange India Fees + 18% GST:
+    # - Taker: 0.05% * 1.18 = 0.059% per side
+    # - Maker: 0.02% * 1.18 = 0.0236% per side (60% lower!)
     FEE_RATE = 0.00059
+    MAKER_FEE_RATE = 0.000236
     WIN_COOLDOWN_SEC = 600
     LOSS_COOLDOWN_SEC = 2700
     DIRECTION_PAUSE_SEC = 2700
@@ -109,6 +112,7 @@ class AutonomousDaemonV9:
         self.last_scan_ts: Optional[str] = None
         self._last_kline_scan_ts: float = 0.0
         self._last_ws_broadcast_ts: float = 0.0
+        self._trade_lock = asyncio.Lock()
 
     def _load_state(self) -> Dict[str, Any]:
         env_mode = os.getenv("EXECUTION_MODE", "LIVE").strip().upper()
@@ -268,21 +272,54 @@ class AutonomousDaemonV9:
 
         live_closed = telemetry.get("closed_trades") or []
         if live_closed:
+            # In LIVE mode, reconstruct authoritative ledger from Delta Exchange fills while preserving
+            # setup_type / confluence_score / exit_reason metadata from matching TRD- / DLT-POS- records
             existing_history: List[Dict[str, Any]] = self.state.get("trade_history", [])
-            existing_ids = {str(t.get("trade_id")) for t in existing_history}
-            added_any = False
-            for dt in reversed(live_closed):
-                t_id = str(dt.get("trade_id"))
-                if t_id not in existing_ids:
-                    existing_history.insert(0, dt)
-                    existing_ids.add(t_id)
-                    added_any = True
-            if added_any:
-                self.state["trade_history"] = existing_history[:200]
-                self._recompute_trade_stats()
+            bot_meta_records = [
+                t for t in existing_history
+                if not str(t.get("trade_id", "")).startswith("DLT-")
+                or str(t.get("trade_id", "")).startswith("DLT-POS-")
+            ]
+            merged_live: List[Dict[str, Any]] = []
+            for dt in live_closed:
+                dt_copy = dict(dt)
+                dt_sym = dt_copy.get("symbol")
+                dt_side = dt_copy.get("side")
+                try:
+                    dt_exit_ts = datetime.fromisoformat(str(dt_copy.get("exit_time", "")).replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    dt_exit_ts = 0.0
+                for bm in bot_meta_records:
+                    if bm.get("symbol") == dt_sym and bm.get("side") == dt_side:
+                        try:
+                            bm_exit_ts = datetime.fromisoformat(str(bm.get("exit_time", "")).replace("Z", "+00:00")).timestamp()
+                        except Exception:
+                            bm_exit_ts = 0.0
+                        if dt_exit_ts > 0 and bm_exit_ts > 0 and abs(dt_exit_ts - bm_exit_ts) < 90.0:
+                            if bm.get("setup_type") and bm.get("setup_type") not in ("DELTA_LIVE_EXECUTION", "DELTA_LIVE_POSITION"):
+                                dt_copy["setup_type"] = bm["setup_type"]
+                            if bm.get("confluence_score"):
+                                dt_copy["confluence_score"] = bm["confluence_score"]
+                            if bm.get("exit_reason") and bm.get("exit_reason") not in ("DELTA_EXCHANGE_LIVE_FILL", "DELTA_EXCHANGE_LIVE_EXIT"):
+                                dt_copy["exit_reason"] = bm["exit_reason"]
+                            break
+                merged_live.append(dt_copy)
+
+            self.state["trade_history"] = merged_live[:200]
+            self._recompute_trade_stats()
 
         live_positions: List[Dict[str, Any]] = telemetry.get("open_positions") or []
         live_by_sym = {p["symbol"]: p for p in live_positions}
+
+        # Deduplicate active_campaigns so at most 1 campaign exists per symbol
+        deduped_camps: List[Dict[str, Any]] = []
+        seen_camp_syms = set()
+        for c in self.active_campaigns:
+            s = c.get("symbol")
+            if s and s not in seen_camp_syms:
+                seen_camp_syms.add(s)
+                deduped_camps.append(c)
+        self.active_campaigns = deduped_camps
 
         now_ts = time.time()
         for camp in list(self.active_campaigns):
@@ -305,8 +342,11 @@ class AutonomousDaemonV9:
                 camp["is_live_delta"] = True
                 if live_pos.get("stop_order_id"):
                     camp["stop_order_id"] = live_pos["stop_order_id"]
-                if live_pos.get("stop_price"):
-                    camp["effective_stop"] = fmt_price(live_pos["stop_price"])
+                if live_pos.get("stop_price") and camp.get("ratchet_stage", 0) == 0 and (now_ts - float(camp.get("entry_ts", now_ts))) < self.WICK_SHIELD_HOLD_SEC:
+                    sp_val = float(live_pos["stop_price"])
+                    ep_val = float(camp["entry_price_raw"] or camp["base_entry_price"])
+                    if (camp["side"] == "LONG" and sp_val < ep_val) or (camp["side"] == "SHORT" and sp_val > ep_val):
+                        camp["effective_stop"] = fmt_price(sp_val)
                 if camp.get("tranches"):
                     camp["tranches"][0]["fill_price"] = camp["base_entry_price"]
                     camp["tranches"][0]["notional_inr"] = camp["total_notional_inr"]
@@ -327,6 +367,19 @@ class AutonomousDaemonV9:
         open_camp_syms = {c["symbol"] for c in self.active_campaigns}
         for sym, pos in live_by_sym.items():
             if sym not in open_camp_syms:
+                # Avoid creating duplicate DLT-POS- campaign if this symbol just closed within the last 20s
+                recently_closed = False
+                for recent_t in self.state.get("trade_history", [])[:5]:
+                    if recent_t.get("symbol") == sym:
+                        try:
+                            rt_ts = datetime.fromisoformat(str(recent_t.get("exit_time", "")).replace("Z", "+00:00")).timestamp()
+                            if (now_ts - rt_ts) < 20.0:
+                                recently_closed = True
+                                break
+                        except Exception:
+                            pass
+                if recently_closed:
+                    continue
                 side = pos["side"]
                 direction = 1.0 if side == "LONG" else -1.0
                 entry_p_raw = float(pos.get("entry_price_raw") or pos["entry_price"] or pos["mark_price"])
@@ -534,17 +587,21 @@ class AutonomousDaemonV9:
                     await self._enter_new_campaign_async(winner)
 
     async def _enter_new_campaign_async(self, sig: Dict[str, Any]) -> None:
-        # Force-sync live Delta wallet balance before entry so 100% of compounded equity sizes the trade
-        if self.live_router.is_live():
-            live_bal = await self.live_router.fetch_inr_balance()
-            if live_bal is not None and live_bal > 0:
-                self.state["active_equity"] = live_bal
-                if live_bal > float(self.state.get("peak_equity", 0.0)):
-                    self.state["peak_equity"] = live_bal
-        self._enter_new_campaign(sig)
-        if self.live_router.is_live() and self.active_campaigns:
-            camp = self.active_campaigns[-1]
-            if camp["symbol"] == sig["symbol"]:
+        if self._trade_lock.locked():
+            return
+        async with self._trade_lock:
+            if any(c["symbol"] == sig["symbol"] for c in self.active_campaigns):
+                return
+            # Force-sync live Delta wallet balance before entry so 100% of compounded equity sizes the trade
+            if self.live_router.is_live():
+                live_bal = await self.live_router.fetch_inr_balance()
+                if live_bal is not None and live_bal > 0:
+                    self.state["active_equity"] = live_bal
+                    if live_bal > float(self.state.get("peak_equity", 0.0)):
+                        self.state["peak_equity"] = live_bal
+
+            camp = self._build_new_campaign(sig)
+            if self.live_router.is_live():
                 res = await self.live_router.open_live_trade(
                     scanner_symbol=camp["symbol"],
                     side=camp["side"],
@@ -553,21 +610,39 @@ class AutonomousDaemonV9:
                     stop_price=camp["effective_stop"],
                     tp_price=camp.get("tp2_price"),
                 )
-                if res:
-                    camp["delta_symbol"] = res["delta_symbol"]
-                    camp["live_qty"] = res["qty"]
-                    camp["remaining_qty"] = res["remaining_qty"]
-                    camp["coin_qty"] = res.get("coin_qty")
-                    camp["stop_order_id"] = res["stop_order_id"]
-                    camp["entry_price_raw"] = float(res["fill_price"])
-                    camp["base_entry_price"] = fmt_price(res["fill_price"])
-                    camp["is_live_delta"] = True
-                    self.save_state()
-                else:
-                    self.active_campaigns.remove(camp)
-                    self.save_state()
+                if not res:
+                    return
+                fill_p = float(res["fill_price"] or camp["entry_price_raw"])
+                direction = 1.0 if camp["side"] == "LONG" else -1.0
+                is_tier1 = camp["symbol"] in TIER1_ALPHA_SYMBOLS
+                hard_stop_dist = 0.0062 if is_tier1 else 0.0068
+                soft_stop_dist = 0.0046 if is_tier1 else 0.0052
+                camp["delta_symbol"] = res["delta_symbol"]
+                camp["live_qty"] = res["qty"]
+                camp["remaining_qty"] = res["remaining_qty"]
+                camp["coin_qty"] = res.get("coin_qty") or camp["coin_qty"]
+                camp["stop_order_id"] = res.get("stop_order_id")
+                camp["tp_order_id"] = res.get("tp_order_id")
+                camp["entry_role"] = res.get("entry_role", "TAKER")
+                camp["entry_price_raw"] = fill_p
+                camp["mark_price_raw"] = fill_p
+                camp["base_entry_price"] = fmt_price(fill_p)
+                camp["current_price"] = fmt_price(fill_p)
+                camp["highest_extreme"] = fmt_price(fill_p)
+                camp["chandelier_stop"] = fmt_price(fill_p * (1.0 - direction * hard_stop_dist))
+                camp["soft_stop"] = fmt_price(fill_p * (1.0 - direction * soft_stop_dist))
+                camp["effective_stop"] = camp["chandelier_stop"]
+                camp["tp1_price"] = fmt_price(fill_p * (1.0 + direction * 0.0088))
+                camp["tp2_price"] = fmt_price(fill_p * (1.0 + direction * 0.0185))
+                camp["entry_ts"] = time.time()
+                camp["is_live_delta"] = True
+                if camp.get("tranches"):
+                    camp["tranches"][0]["fill_price"] = fmt_price(fill_p)
 
-    def _enter_new_campaign(self, sig: Dict[str, Any]) -> None:
+            self.active_campaigns.append(camp)
+            self.save_state()
+
+    def _build_new_campaign(self, sig: Dict[str, Any]) -> Dict[str, Any]:
         active_eq = float(self.state["active_equity"])
         lev = 7.2 if sig["confluence_score"] >= 98 else 6.5
         total_notional = round(active_eq * lev, 2)
@@ -638,8 +713,13 @@ class AutonomousDaemonV9:
             "rvol_at_entry": sig["rvol"],
             "tranches": tranches,
         }
-        self.active_campaigns.append(new_camp)
+        return new_camp
+
+    def _enter_new_campaign(self, sig: Dict[str, Any]) -> Dict[str, Any]:
+        camp = self._build_new_campaign(sig)
+        self.active_campaigns.append(camp)
         self.save_state()
+        return camp
 
     def _update_campaign(self, camp: Dict[str, Any], live_price: float) -> None:
         side = camp["side"]
@@ -657,11 +737,19 @@ class AutonomousDaemonV9:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # V9.5 Stage 0.5 Fee-Cleared Shield (+0.38% move): Locks Stop at Entry + 0.16% (clears 0.118% round-trip fee+GST!)
+        # V9.6 Stage 0.25 Early Fee-Cleared Micro-Shield (+0.26% move): Locks Stop at Entry + 0.13% (clears 0.0826% Maker+Taker & 0.118% Taker+Taker fee+GST!)
+        if max_fav_pct >= 0.0022 and camp.get("ratchet_stage", 0) < 0.25:
+            camp["ratchet_stage"] = 0.25
+            camp["breakeven_locked"] = True
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0013))
+            camp["effective_stop"] = camp["breakeven_stop"]
+            camp["max_stage_reached"] = "EARLY_FEE_SHIELD_LOCKED"
+
+        # V9.6 Stage 0.5 Solid Fee-Cleared Shield (+0.38% move): Locks Stop at Entry + 0.18% (guaranteed net win after GST!)
         if max_fav_pct >= 0.0038 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0016))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0018))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "FEE_CLEARED_SHIELD_LOCKED"
 
@@ -702,18 +790,30 @@ class AutonomousDaemonV9:
             self.close_campaign(camp, exit_price=live_price, reason="STAGE_4_HOME_RUN_JACKPOT_WIN")
             return
 
-        # 25-Minute Time-Decay Scratch Exit (Requires >= +0.22% move to clear 0.118% fee + GST hurdle)
+        # V9.6 8-Minute Dead-Momentum Escape & 20-Minute Scratch Win:
+        # - If a trade has been open >= 8 minutes (480s) without ever reaching Stage 0.25 (+0.26%), tighten stop to -0.22% (cutting loss in half)
+        #   and exit immediately on any >= +0.16% fee-cleared bounce!
         age_sec = time.time() - float(camp.get("entry_ts", time.time()))
-        if camp.get("ratchet_stage", 0) < 1 and age_sec >= 1500:
-            scratch_p = entry_p * (1.0 + direction * 0.0022)
+        if camp.get("ratchet_stage", 0) == 0 and age_sec >= 480:
+            scratch_bounce = entry_p * (1.0 + direction * 0.0016)
+            if (side == "LONG" and live_price >= scratch_bounce) or (side == "SHORT" and live_price <= scratch_bounce):
+                self.close_campaign(camp, exit_price=live_price, reason="STALE_MOMENTUM_FEE_CLEARED_WIN")
+                return
+            tight_stale_stop = fmt_price(entry_p * (1.0 - direction * 0.0022))
+            if (side == "LONG" and tight_stale_stop > camp["effective_stop"]) or (
+                side == "SHORT" and tight_stale_stop < camp["effective_stop"]
+            ):
+                camp["effective_stop"] = tight_stale_stop
+        elif camp.get("ratchet_stage", 0) < 1 and age_sec >= 1200:
+            scratch_p = entry_p * (1.0 + direction * 0.0020)
             if (side == "LONG" and live_price >= scratch_p) or (side == "SHORT" and live_price <= scratch_p):
                 self.close_campaign(camp, exit_price=live_price, reason="TIME_DECAY_FEE_CLEARED_WIN")
                 return
 
         # Two-Tier Stop Check:
         # - Before 90s hold: only exit on effective_stop (disaster stop or ratcheted profit lock)
-        # - After 90s hold: if still at Stage 0, tighten effective stop to soft_stop (-0.46% / -0.52%)
-        if camp.get("ratchet_stage", 0) == 0 and age_sec >= self.WICK_SHIELD_HOLD_SEC and camp.get("soft_stop"):
+        # - Between 90s and 480s hold: if still at Stage 0, tighten effective stop to soft_stop (-0.46% / -0.52%)
+        if camp.get("ratchet_stage", 0) == 0 and self.WICK_SHIELD_HOLD_SEC <= age_sec < 480 and camp.get("soft_stop"):
             camp["effective_stop"] = camp["soft_stop"]
 
         stop_hit = (side == "LONG" and live_price <= camp["effective_stop"]) or (
@@ -726,6 +826,8 @@ class AutonomousDaemonV9:
                 if st >= 1
                 else "STAGE_0.5_FEE_CLEARED_SHIELD_WIN"
                 if st == 0.5
+                else "STAGE_0.25_EARLY_FEE_SHIELD_WIN"
+                if st == 0.25
                 else "CONFIRMATION_STOP_LOSS"
             )
             self.close_campaign(camp, exit_price=live_price, reason=reason)
@@ -762,13 +864,16 @@ class AutonomousDaemonV9:
         prev_eq = float(self.state["active_equity"])
 
         # Exact real-world PnL after 0.059% per-side fee (0.05% + 18% GST) — ZERO fake floors or artificial loss caps
+        entry_fee_rate = self.MAKER_FEE_RATE if camp.get("entry_role") == "MAKER" else self.FEE_RATE
+        exit_fee_rate = self.MAKER_FEE_RATE if reason == "STAGE_4_HOME_RUN_JACKPOT_WIN" else self.FEE_RATE
+        round_trip_rate = entry_fee_rate + exit_fee_rate
         st = camp.get("ratchet_stage", 0)
         if st >= 2 and camp.get("tp1_hit"):
             runner_notional = notional * 0.50
-            runner_pnl = runner_notional * pct_move - (runner_notional * self.FEE_RATE * 2.0)
+            runner_pnl = runner_notional * pct_move - (runner_notional * round_trip_rate)
             realized_pnl = round(float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl, 2)
         else:
-            total_fees = notional * self.FEE_RATE * 2.0
+            total_fees = notional * round_trip_rate
             realized_pnl = round(notional * pct_move - total_fees, 2)
 
         new_eq = round(prev_eq + realized_pnl, 2)
