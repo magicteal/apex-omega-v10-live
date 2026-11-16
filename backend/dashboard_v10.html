@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>APEX-OMEGA V11.0 // Live-Shadow & 1-Click Delta Live Command Center</title>
+  <title>APEX-OMEGA V12.0 // Live-Shadow & 1-Click Delta Live Command Center</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     body { background: #070A0D; color: #E2E8F0; font-family: Inter, system-ui, sans-serif; }
@@ -17,10 +17,10 @@
       <div class="flex items-center gap-2.5">
         <span class="h-2.5 w-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
         <h1 class="text-xs sm:text-sm font-bold tracking-wider uppercase text-slate-100">
-          APEX-OMEGA V11.0 // TRIPLE-CORE LIVE-SHADOW & 1-CLICK DELTA LIVE MASTER
+          APEX-OMEGA V12.0 // TRIPLE-CORE LIVE-SHADOW & 1-CLICK DELTA LIVE MASTER
         </h1>
         <span id="badge-status" class="text-[10px] px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-700/50 font-semibold">
-          V11.0 TRIPLE-CORE 0MS SYNCED
+          V12.0 TRIPLE-CORE 0MS SYNCED
         </span>
       </div>
       <div class="flex flex-wrap items-center gap-2 text-[11px] text-slate-400 mono">
@@ -96,8 +96,8 @@
     <!-- TAB 01: MONITOR -->
     <div id="view-monitor" class="space-y-4">
       <div class="bg-[#0B0F12] border border-[#1C242D] rounded p-3.5">
-        <div class="text-xs font-bold uppercase text-slate-300 mb-2">ACTIVE POSITIONS & V11.0 5-STAGE RATCHET (+0.14% SHIELD & 15M RESCUE)</div>
-        <div id="open-positions-box" class="text-xs text-slate-400 mono">V11.0 Triple-Core Sniper — Scanning Alpha-6 every 1.5s for 96+/100 ignition...</div>
+        <div class="text-xs font-bold uppercase text-slate-300 mb-2">ACTIVE POSITIONS & V12.0 5-STAGE RATCHET (+0.14% SHIELD & 15M RESCUE)</div>
+        <div id="open-positions-box" class="text-xs text-slate-400 mono">V12.0 Triple-Core Sniper — Scanning Alpha-6 every 1.5s for 96+/100 ignition...</div>
       </div>
 
       <div class="bg-[#0B0F12] border border-[#1C242D] rounded overflow-x-auto">
@@ -150,7 +150,7 @@
       <div class="bg-[#0B0F12] border border-[#1C242D] rounded p-4 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div class="text-xs font-bold uppercase text-amber-300">03 // V11.0 EXACT DELTA LIVE-MATH BACKTEST LAB & 1-CLICK MODE SWITCH</div>
+            <div class="text-xs font-bold uppercase text-amber-300">03 // V12.0 EXACT DELTA LIVE-MATH BACKTEST LAB & 1-CLICK MODE SWITCH</div>
             <div class="text-[11px] text-slate-400 mt-0.5">Simulates exact Delta Exchange India contract lot rounding, 0.0236% Maker / 0.0590% Taker fees (inc. 18% GST), BBO slippage, and +0.14% early fee-shield.</div>
           </div>
           <div class="flex gap-2">
@@ -227,7 +227,7 @@
     }
     async function runBacktestLab(days) {
       const box = document.getElementById('bt-results-box');
-      box.innerHTML = `<span class="text-amber-300">Running ${days}-Day V11.0 Exact Delta Live-Math Simulation...</span>`;
+      box.innerHTML = `<span class="text-amber-300">Running ${days}-Day V12.0 Exact Delta Live-Math Simulation...</span>`;
       const startEq = Number(document.getElementById('bt-start-eq').value || 10000);
       const feeMode = document.getElementById('bt-fee-mode').value;
       const universe = document.getElementById('bt-universe').value;
@@ -290,7 +290,7 @@
         // Open Positions Box
         const posBox = document.getElementById('open-positions-box');
         if (camps.length === 0) {
-          posBox.innerHTML = `<div class="text-slate-400">0/3 Open Positions — V11.0 Triple-Core Sniper actively scanning Alpha-6 (${mode === 'LIVE' ? 'DELTA LIVE' : 'LIVE-SHADOW SIM'}) every 1.5s for 96+/100 ignition...</div>`;
+          posBox.innerHTML = `<div class="text-slate-400">0/3 Open Positions — V12.0 Triple-Core Sniper actively scanning Alpha-6 (${mode === 'LIVE' ? 'DELTA LIVE' : 'LIVE-SHADOW SIM'}) every 1.5s for 96+/100 ignition...</div>`;
         } else {
           posBox.innerHTML = camps.map(c => {
             const p = Number(c.total_unrealized_pnl_inr || 0) + Number(c.tp1_banked_pnl_inr || 0);

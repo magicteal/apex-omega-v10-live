@@ -91,6 +91,25 @@ class SqueezeEngine:
             )
         return SqueezeEngine._ema(tr, period)
 
+    @staticmethod
+    def _adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, atr14: np.ndarray) -> float:
+        n = len(close)
+        if n < 15:
+            return 20.0
+        plus_dm = np.zeros(n, dtype=float)
+        minus_dm = np.zeros(n, dtype=float)
+        for i in range(1, n):
+            h_diff = high[i] - high[i - 1]
+            l_diff = low[i - 1] - low[i]
+            if h_diff > l_diff and h_diff > 0:
+                plus_dm[i] = h_diff
+            if l_diff > h_diff and l_diff > 0:
+                minus_dm[i] = l_diff
+        plus_di = 100.0 * SqueezeEngine._ema(plus_dm, 14) / np.maximum(atr14, 1e-12)
+        minus_di = 100.0 * SqueezeEngine._ema(minus_dm, 14) / np.maximum(atr14, 1e-12)
+        dx = 100.0 * np.abs(plus_di - minus_di) / np.maximum(plus_di + minus_di, 1e-12)
+        return float(SqueezeEngine._ema(dx, 14)[-1])
+
     def evaluate_ohlcv(self, symbol: str, ohlcv: List[List[float]], feed_source: str = "DELTA_INDIA_5M") -> QuantV9Signal:
         full_arr = np.array(ohlcv, dtype=float)
         live_tick_price = float(full_arr[-1, 4])
@@ -161,12 +180,15 @@ class SqueezeEngine:
         green_bounce = not_parabolic_spike and float(close[-1]) > float(open_p[-1]) and float(close[-1]) >= float(close[-2])
         red_bounce = not_parabolic_spike and float(close[-1]) < float(open_p[-1]) and float(close[-1]) <= float(close[-2])
 
+        adx14 = self._adx(high, low, close, atr14)
         is_tier1 = symbol in TIER1_ALPHA_SYMBOLS
         tier_bonus = 2 if is_tier1 else 0
-        vol_gate_ok = is_tier1 and true_atr_pct >= 0.0014 and ker >= 0.16
+        no_top_buy = z_score <= 0.85 and rsi14 <= 68.0
+        no_bot_short = z_score >= -0.85 and rsi14 >= 32.0
+        vol_gate_ok = is_tier1 and true_atr_pct >= 0.0014 and ker >= 0.16 and adx14 >= 14.0
 
         core_a_bull_trend = (
-            vol_gate_ok
+            vol_gate_ok and no_top_buy
             and float(close[-1]) >= float(ema200[-1]) * 0.996
             and float(ema21[-1]) > float(ema50[-1])
             and float(ema50[-1]) >= float(ema100[-1]) * 0.9995
@@ -174,7 +196,7 @@ class SqueezeEngine:
             and roc5 > -0.0060
         )
         core_a_bear_trend = (
-            vol_gate_ok
+            vol_gate_ok and no_bot_short
             and float(close[-1]) <= float(ema200[-1]) * 1.004
             and float(ema21[-1]) < float(ema50[-1])
             and float(ema50[-1]) <= float(ema100[-1]) * 1.0005
@@ -186,14 +208,14 @@ class SqueezeEngine:
         score_a_bear = 38 + tier_bonus + (22 if core_a_bear_trend else 0) + (19 if rsi2 >= 78 else 0) + (11 if z_score >= 1.00 else 0) + (10 if (red_bounce or upper_wick >= 0.28) else 0) + (6 if rvol >= 1.08 else 0)
 
         core_b_bull_stack = (
-            vol_gate_ok
+            vol_gate_ok and no_top_buy
             and float(close[-1]) >= float(ema200[-1]) * 0.998
             and float(ema9[-1]) >= float(ema21[-1]) * 0.9995
             and float(ema21[-1]) > float(ema50[-1])
             and ema_slope >= 0.00035
         )
         core_b_bear_stack = (
-            vol_gate_ok
+            vol_gate_ok and no_bot_short
             and float(close[-1]) <= float(ema200[-1]) * 1.002
             and float(ema9[-1]) <= float(ema21[-1]) * 1.0005
             and float(ema21[-1]) < float(ema50[-1])
@@ -205,8 +227,8 @@ class SqueezeEngine:
         bull_pullback_touch = recent_low_3 <= float(ema21[-1]) * 1.0035 and green_bounce and float(close[-1]) >= float(ema9[-1]) * 0.9995
         bear_pullback_touch = recent_high_3 >= float(ema21[-1]) * 0.9965 and red_bounce and float(close[-1]) <= float(ema9[-1]) * 1.0005
 
-        bull_not_overext = -1.35 <= z_score <= 0.90 and 42 <= rsi14 <= 70
-        bear_not_overext = -0.90 <= z_score <= 1.35 and 30 <= rsi14 <= 58
+        bull_not_overext = -1.35 <= z_score <= 0.85 and 42 <= rsi14 <= 68
+        bear_not_overext = -0.85 <= z_score <= 1.35 and 32 <= rsi14 <= 58
 
         score_b_bull = 42 + tier_bonus + (24 if core_b_bull_stack else 0) + (16 if bull_pullback_touch else 0) + (11 if bull_not_overext else 0) + (5 if rvol >= 1.02 else 0)
         score_b_bear = 42 + tier_bonus + (24 if core_b_bear_stack else 0) + (16 if bear_pullback_touch else 0) + (11 if bear_not_overext else 0) + (5 if rvol >= 1.02 else 0)
@@ -220,7 +242,7 @@ class SqueezeEngine:
             and recent_low_2 <= float(ema9[-1]) * 1.0010
             and green_bounce
             and float(close[-1]) >= float(ema9[-1])
-            and -1.00 <= z_score <= 0.50
+            and -1.10 <= z_score <= 0.65
             and rvol >= 1.10
             and ker >= 0.22
         )
@@ -230,7 +252,7 @@ class SqueezeEngine:
             and recent_high_2 >= float(ema9[-1]) * 0.9990
             and red_bounce
             and float(close[-1]) <= float(ema9[-1])
-            and -0.50 <= z_score <= 1.00
+            and -0.65 <= z_score <= 1.10
             and rvol >= 1.10
             and ker >= 0.22
         )

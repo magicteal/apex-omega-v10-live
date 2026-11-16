@@ -92,8 +92,8 @@ class AutonomousDaemonV9:
     FEE_RATE = 0.00059
     MAKER_FEE_RATE = 0.000236
     WIN_COOLDOWN_SEC = 300
-    LOSS_COOLDOWN_SEC = 1800
-    DIRECTION_PAUSE_SEC = 1800
+    LOSS_COOLDOWN_SEC = 1200
+    DIRECTION_PAUSE_SEC = 1200
     MAX_OPEN_SLOTS = 3
     WICK_SHIELD_HOLD_SEC = 60.0
 
@@ -117,7 +117,7 @@ class AutonomousDaemonV9:
         self._trade_lock = asyncio.Lock()
 
     def _load_state(self) -> Dict[str, Any]:
-        env_mode = os.getenv("EXECUTION_MODE", "LIVE").strip().upper()
+        env_mode = os.getenv("EXECUTION_MODE", "SHADOW").strip().upper()
         default_eq = float(os.getenv("STARTING_EQUITY_INR", "10000.0"))
         if STATE_PATH.exists():
             try:
@@ -367,6 +367,21 @@ class AutonomousDaemonV9:
                         or camp["current_price"]
                     )
                     self.close_campaign(camp, exit_price=exit_p, reason="DELTA_EXCHANGE_LIVE_EXIT")
+                    try:
+                        open_ords = await self.live_router.fetch_open_orders()
+                        p_id = self.live_router.product_meta.get(d_sym, {}).get("id")
+                        for o in open_ords:
+                            if o.get("delta_symbol") == d_sym and (o.get("reduce_only") or o.get("is_stop_order")):
+                                oid = o.get("order_id")
+                                if oid and p_id:
+                                    await self.live_router.delta_rest(
+                                        "DELETE",
+                                        "/v2/orders",
+                                        body={"id": int(oid) if str(oid).isdigit() else oid, "product_id": p_id},
+                                        authenticated=True,
+                                    )
+                    except Exception:
+                        pass
 
         open_camp_syms = {c["symbol"] for c in self.active_campaigns}
         for sym, pos in live_by_sym.items():
@@ -486,13 +501,26 @@ class AutonomousDaemonV9:
                     camp["stop_order_id"] = st2["stop_order_id"]
                     self.save_state()
                 elif new_stop != prev_stop:
-                    camp["stop_order_id"] = await self.live_router.update_hardware_stop(
-                        camp["delta_symbol"],
-                        camp["side"],
-                        float(camp.get("remaining_qty") or camp.get("live_qty") or 0.0),
-                        camp.get("stop_order_id"),
-                        float(new_stop),
-                    )
+                    # V11.5 Maker-Protected Hardware Stop:
+                    # When ratchet_stage >= 0.25 (profit lock), keep the exchange hardware stop_loss_order slightly
+                    # behind the soft profit-lock floor (at Entry - 0.05% disaster breakeven) so that normal pullbacks
+                    # to the profit-lock floor trigger our software close_live_trade(prefer_maker=True) Maker limit order
+                    # instead of getting eaten by a Taker market stop on Delta Exchange!
+                    direction = 1.0 if camp["side"] == "LONG" else -1.0
+                    ep_val = float(camp.get("entry_price_raw") or camp["base_entry_price"])
+                    if float(new_stage or 0) >= 0.25:
+                        hw_safety_stop = float(fmt_price(ep_val * (1.0 - direction * 0.0005)))
+                    else:
+                        hw_safety_stop = float(new_stop)
+                    if hw_safety_stop != float(camp.get("last_hw_stop") or 0.0):
+                        camp["last_hw_stop"] = hw_safety_stop
+                        camp["stop_order_id"] = await self.live_router.update_hardware_stop(
+                            camp["delta_symbol"],
+                            camp["side"],
+                            float(camp.get("remaining_qty") or camp.get("live_qty") or 0.0),
+                            camp.get("stop_order_id"),
+                            hw_safety_stop,
+                        )
                     self.save_state()
 
     async def scan_and_execute_cycle(self) -> None:
@@ -524,6 +552,26 @@ class AutonomousDaemonV9:
 
         if self.live_router.is_live():
             await self.sync_live_delta_state(force=False)
+        elif not self.state.get("shadow_balance_initialized") and self.live_router.has_credentials():
+            self.state["shadow_balance_initialized"] = True
+            try:
+                res, _ = await self.live_router.delta_rest("GET", "/v2/wallet/balances", authenticated=True)
+                if res and isinstance(res.get("result"), list):
+                    tot_inr = 0.0
+                    for w in res["result"]:
+                        ccy = str(w.get("asset_symbol") or w.get("asset", {}).get("symbol") or "USD").upper()
+                        if ccy in ("INR", "USD", "USDT"):
+                            b_raw = float(w.get("balance") or 0.0)
+                            if b_raw > 0:
+                                tot_inr += self.live_router._to_inr(b_raw, ccy, w.get("balance_inr"))
+                    if tot_inr > 0:
+                        self.live_router.last_synced_balance_inr = round(tot_inr, 2)
+                        self.state["starting_equity"] = round(tot_inr, 2)
+                        self.state["active_equity"] = round(tot_inr, 2)
+                        self.state["peak_equity"] = round(tot_inr, 2)
+                        self.save_state()
+            except Exception:
+                pass
 
         for camp in list(self.active_campaigns):
             sym = camp["symbol"]
@@ -768,27 +816,28 @@ class AutonomousDaemonV9:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # V11 Stage 0.25 Ultra-Fast Fee Shield (+0.14% move): Locks Stop at Entry + 0.10% (eliminates 64% of Stage-0 reversals)
-        if max_fav_pct >= 0.0014 and camp.get("ratchet_stage", 0) < 0.25:
+        # V12.0 Stage 0.25 Fee-Cleared Shield (+0.18% move -> locks +0.12%):
+        # Prevents +0.056% SUI-style premature exits while guaranteeing net profit after fees
+        if max_fav_pct >= 0.0018 and camp.get("ratchet_stage", 0) < 0.25:
             camp["ratchet_stage"] = 0.25
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0010))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0012))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "EARLY_FEE_SHIELD_LOCKED"
 
-        # V11 Stage 0.5 Slippage-Proof Shield (+0.28% move): Locks Stop at Entry + 0.20%
-        if max_fav_pct >= 0.0028 and camp.get("ratchet_stage", 0) < 0.5:
+        # V12.0 Stage 0.5 Breathing-Room Shield (+0.32% move -> locks +0.20%, 0.12% trail buffer):
+        if max_fav_pct >= 0.0032 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
             camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0020))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "FEE_CLEARED_SHIELD_LOCKED"
 
-        # V11 Stage 1 Solid Profit Lock (+0.38% move): Locks Stop at Entry + 0.28%
-        if max_fav_pct >= 0.0038 and camp.get("ratchet_stage", 0) < 1:
+        # V12.0 Stage 1 Runner Launchpad (+0.45% move -> locks +0.30%, 0.15% trail buffer so trades reach Stage 2/3):
+        if max_fav_pct >= 0.0045 and camp.get("ratchet_stage", 0) < 1:
             camp["ratchet_stage"] = 1
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0028))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0030))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_1_NET_PROFIT_LOCKED"
 
@@ -1078,7 +1127,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def serve_visual_dashboard() -> HTMLResponse:
     if DASHBOARD_HTML_PATH.exists():
         return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
-    return HTMLResponse(content="<h1>APEX-OMEGA V11.0 LIVE-SHADOW MASTER ONLINE</h1>", status_code=200)
+    return HTMLResponse(content="<h1>APEX-OMEGA V12.0 ORDERBOOK MASTER ONLINE</h1>", status_code=200)
 
 
 @app.get("/health")
@@ -1089,8 +1138,8 @@ async def serve_visual_dashboard() -> HTMLResponse:
 @app.head("/api/ping")
 async def health_check() -> Dict[str, Any]:
     return {
-        "status": "ONLINE_24_7_V11_0_LIVE_SHADOW",
-        "version": "11.0.0",
+        "status": "ONLINE_24_7_V12_0_ORDERBOOK_MASTER",
+        "version": "12.0.0",
         "uptime_seconds": int(time.time() - BOOT_TIME),
         "last_scan_ts": daemon.last_scan_ts,
         "active_equity_inr": daemon.state["active_equity"],
@@ -1242,6 +1291,15 @@ async def toggle_execution_mode(req: ToggleModeRequest) -> Dict[str, Any]:
     daemon.state["mode"] = new_mode
     if new_mode == "LIVE":
         await daemon.sync_live_delta_state(force=True)
+    else:
+        # In SHADOW mode, keep only SHADOW TRD- trades in ledger so old DLT- historical losses don't pollute your Shadow test!
+        shadow_only = [t for t in daemon.state.get("trade_history", []) if str(t.get("trade_id", "")).startswith("TRD-")]
+        daemon.state["trade_history"] = shadow_only
+        daemon._recompute_trade_stats()
+        if daemon.live_router.last_synced_balance_inr and daemon.live_router.last_synced_balance_inr > 0 and not shadow_only:
+            daemon.state["starting_equity"] = daemon.live_router.last_synced_balance_inr
+            daemon.state["active_equity"] = daemon.live_router.last_synced_balance_inr
+            daemon.state["peak_equity"] = daemon.live_router.last_synced_balance_inr
     daemon.save_state()
     await daemon.broadcast_to_clients(force=True)
     return {"status": "MODE_UPDATED", "mode": new_mode, "telemetry": daemon.build_payload()}

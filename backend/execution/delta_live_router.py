@@ -102,7 +102,7 @@ class DeltaIndiaLiveRouter:
     WS_URL = "wss://socket.india.delta.exchange"
 
     def __init__(self) -> None:
-        self.execution_mode = os.getenv("EXECUTION_MODE", "LIVE").strip().upper()
+        self.execution_mode = os.getenv("EXECUTION_MODE", "SHADOW").strip().upper()
         self.api_key = os.getenv("EXCHANGE_API_KEY", "rF2stYIF0Trs3o6VirgCwHtcskckWM").strip()
         self.api_secret = os.getenv(
             "EXCHANGE_API_SECRET",
@@ -275,6 +275,22 @@ class DeltaIndiaLiveRouter:
             authenticated,
             timeout,
         )
+
+    async def fetch_fresh_l2_bbo(self, delta_symbol: str) -> Tuple[float, float]:
+        """Fetches real-time L2 top-of-book Best Bid / Best Ask from GET /v2/l2orderbook/{symbol} so post_only Maker orders never cross the spread."""
+        clean = str(delta_symbol or "").upper()
+        res, _ = await self.delta_rest("GET", f"/v2/l2orderbook/{clean}", authenticated=False, timeout=2.0)
+        if res and isinstance(res.get("result"), dict):
+            r_obj = res["result"]
+            buys = r_obj.get("buy") or []
+            sells = r_obj.get("sell") or []
+            bb = float(buys[0].get("price") or 0.0) if buys and isinstance(buys[0], dict) else 0.0
+            ba = float(sells[0].get("price") or 0.0) if sells and isinstance(sells[0], dict) else 0.0
+            if bb > 0 and ba > 0:
+                self.live_ticker_bbo[clean] = {"bid": bb, "ask": ba}
+                return bb, ba
+        bbo = self.live_ticker_bbo.get(clean, {})
+        return float(bbo.get("bid") or 0.0), float(bbo.get("ask") or 0.0)
 
     async def fetch_all_delta_tickers(self) -> Dict[str, float]:
         res, _ = await self.delta_rest("GET", "/v2/tickers", authenticated=False, timeout=2.5)
@@ -1090,30 +1106,39 @@ class DeltaIndiaLiveRouter:
                     body={"product_id": product_id, "leverage": "8"},
                     authenticated=True,
                 )
-                # V9.7 2-Step Smart Maker-First BBO Chaser:
-                # - Step 1 (0.75s) + Step 2 (0.75s re-peg to fresh WebSocket Best Bid / Best Ask):
-                #   Captures 0.0236% Maker fee (60% cheaper than Taker) even when price ticks once during order placement!
-                # - Falls back to market_order only if any remainder is still unfilled after both Maker attempts.
+                # V12.0 Fresh-L2-Orderbook Maker Engine + Exact Partial-Fill Accumulator:
+                # 1. Queries fresh /v2/l2orderbook/{delta_sym} before placing post_only limit_order (prevents immediate_execution_post_only rejections).
+                # 2. Waits 1.8s per Maker attempt (restoring Era-1's 100% Maker fill rate).
+                # 3. Accurately tracks cumulative `filled_total` + `rem_to_fill` across attempts so partial Maker fills NEVER double-order (fixes the 3889 vs 2439 bug!).
                 entry_res, entry_err = None, None
                 entry_role = "TAKER"
                 tick_sz = float(p_meta.get("tick_size") or 0.0001)
+                target_total_qty = int(qty)
+                rem_to_fill = int(qty)
+                filled_total = 0
+                weighted_px_sum = 0.0
+                last_order_id = None
+
                 for _attempt in range(2):
-                    if entry_res is not None or qty <= 0:
+                    if rem_to_fill <= 0:
                         break
-                    bbo = self.live_ticker_bbo.get(delta_sym, {})
+                    best_bid, best_ask = await self.fetch_fresh_l2_bbo(delta_sym)
                     cur_mk = float(self.live_ticker_marks.get(delta_sym) or entry_price)
-                    best_bid = float(bbo.get("bid") or 0.0)
-                    best_ask = float(bbo.get("ask") or 0.0)
-                    maker_px = best_bid if side == "LONG" else best_ask
-                    if maker_px <= 0:
-                        maker_px = (cur_mk - tick_sz) if side == "LONG" else (cur_mk + tick_sz)
+                    if side == "LONG":
+                        maker_px = best_bid if best_bid > 0 else (cur_mk - tick_sz)
+                        if _attempt == 1 and best_ask > 0 and maker_px >= best_ask:
+                            maker_px = best_ask - tick_sz
+                    else:
+                        maker_px = best_ask if best_ask > 0 else (cur_mk + tick_sz)
+                        if _attempt == 1 and best_bid > 0 and maker_px <= best_bid:
+                            maker_px = best_bid + tick_sz
 
                     lim_res, _ = await self.delta_rest(
                         "POST",
                         "/v2/orders",
                         body={
                             "product_id": product_id,
-                            "size": qty,
+                            "size": rem_to_fill,
                             "side": order_side,
                             "order_type": "limit_order",
                             "limit_price": str(_fmt_price(maker_px)),
@@ -1124,19 +1149,29 @@ class DeltaIndiaLiveRouter:
                     if lim_res and isinstance(lim_res.get("result"), dict):
                         l_obj = lim_res["result"]
                         l_id = l_obj.get("id")
+                        last_order_id = l_id
                         l_state = str(l_obj.get("state") or "").lower()
                         if l_state in ("closed", "filled") and float(l_obj.get("unfilled_size") or 0.0) <= 0:
+                            f_px = float(l_obj.get("average_fill_price") or l_obj.get("limit_price") or maker_px)
+                            weighted_px_sum += f_px * rem_to_fill
+                            filled_total += rem_to_fill
+                            rem_to_fill = 0
                             entry_res = lim_res
                             entry_role = "MAKER"
                             break
                         elif l_id and l_state not in ("cancelled", "rejected"):
-                            await asyncio.sleep(0.75)
+                            await asyncio.sleep(1.8)
                             chk_res, _ = await self.delta_rest("GET", f"/v2/orders/{l_id}", authenticated=True)
                             if chk_res and isinstance(chk_res.get("result"), dict):
                                 c_obj = chk_res["result"]
                                 c_state = str(c_obj.get("state") or "").lower()
-                                unfilled = float(c_obj.get("unfilled_size") or 0.0)
+                                unfilled = int(round(float(c_obj.get("unfilled_size") or 0.0)))
+                                filled_this_order = max(0, rem_to_fill - unfilled)
                                 if c_state in ("closed", "filled") and unfilled <= 0:
+                                    f_px = float(c_obj.get("average_fill_price") or c_obj.get("limit_price") or maker_px)
+                                    weighted_px_sum += f_px * rem_to_fill
+                                    filled_total += rem_to_fill
+                                    rem_to_fill = 0
                                     entry_res = chk_res
                                     entry_role = "MAKER"
                                     break
@@ -1147,32 +1182,42 @@ class DeltaIndiaLiveRouter:
                                         body={"id": int(l_id) if str(l_id).isdigit() else l_id, "product_id": product_id},
                                         authenticated=True,
                                     )
-                                    filled_so_far = max(0, int(round(qty - unfilled)))
-                                    if filled_so_far > 0 and unfilled > 0:
-                                        qty = int(round(unfilled))
-                                        entry_role = "MAKER" 
+                                    if filled_this_order > 0:
+                                        f_px = float(c_obj.get("average_fill_price") or c_obj.get("limit_price") or maker_px)
+                                        weighted_px_sum += f_px * filled_this_order
+                                        filled_total += filled_this_order
+                                        rem_to_fill = max(0, target_total_qty - filled_total)
+                                        entry_role = "MAKER"
 
-                if not entry_res:
-                    entry_res, entry_err = await self.delta_rest(
+                if rem_to_fill > 0:
+                    mkt_res, entry_err = await self.delta_rest(
                         "POST",
                         "/v2/orders",
                         body={
                             "product_id": product_id,
-                            "size": qty,
+                            "size": rem_to_fill,
                             "side": order_side,
                             "order_type": "market_order",
                         },
                         authenticated=True,
                     )
-                if entry_res and isinstance(entry_res.get("result"), dict):
-                    e_obj = entry_res["result"]
-                    fill_p = float(e_obj.get("average_fill_price") or e_obj.get("limit_price") or entry_price)
+                    if mkt_res and isinstance(mkt_res.get("result"), dict):
+                        m_obj = mkt_res["result"]
+                        last_order_id = m_obj.get("id") or last_order_id
+                        m_px = float(m_obj.get("average_fill_price") or m_obj.get("limit_price") or entry_price)
+                        weighted_px_sum += m_px * rem_to_fill
+                        filled_total += rem_to_fill
+                        rem_to_fill = 0
+                        entry_res = mkt_res
+
+                if filled_total > 0:
+                    fill_p = round(weighted_px_sum / float(filled_total), 6) if weighted_px_sum > 0 else entry_price
                     stop_res, _ = await self.delta_rest(
                         "POST",
                         "/v2/orders",
                         body={
                             "product_id": product_id,
-                            "size": qty,
+                            "size": int(filled_total),
                             "side": stop_side,
                             "order_type": "market_order",
                             "stop_order_type": "stop_loss_order",
@@ -1187,7 +1232,7 @@ class DeltaIndiaLiveRouter:
                         else None
                     )
 
-                    # Place resting Maker Limit Take-Profit order at Stage 4 if tp_price is provided
+                    # Place resting Maker Limit Take-Profit order at Stage 4 for exact filled_total
                     tp_id = None
                     if tp_price and tp_price > 0:
                         tp_res, _ = await self.delta_rest(
@@ -1195,7 +1240,7 @@ class DeltaIndiaLiveRouter:
                             "/v2/orders",
                             body={
                                 "product_id": product_id,
-                                "size": qty,
+                                "size": int(filled_total),
                                 "side": stop_side,
                                 "order_type": "limit_order",
                                 "limit_price": str(_fmt_price(tp_price)),
@@ -1209,12 +1254,12 @@ class DeltaIndiaLiveRouter:
                     self._force_full_refresh = True
                     return {
                         "delta_symbol": delta_sym,
-                        "qty": float(qty),
-                        "remaining_qty": float(qty),
-                        "coin_qty": float(qty) * c_val,
+                        "qty": float(filled_total),
+                        "remaining_qty": float(filled_total),
+                        "coin_qty": float(filled_total) * c_val,
                         "fill_price": fill_p,
                         "entry_role": entry_role,
-                        "entry_order_id": str(e_obj.get("id")),
+                        "entry_order_id": str(last_order_id or ""),
                         "stop_order_id": stop_id,
                         "tp_order_id": tp_id,
                     }
@@ -1269,18 +1314,59 @@ class DeltaIndiaLiveRouter:
 
             if half_qty > 0 and rem_qty > 0:
                 if product_id:
-                    await self.delta_rest(
-                        "POST",
-                        "/v2/orders",
-                        body={
-                            "product_id": product_id,
-                            "size": int(half_qty),
-                            "side": close_side,
-                            "order_type": "market_order",
-                            "reduce_only": True,
-                        },
-                        authenticated=True,
-                    )
+                    st2_filled = False
+                    best_bid, best_ask = await self.fetch_fresh_l2_bbo(delta_symbol)
+                    maker_px = float(best_bid if close_side == "buy" else best_ask)
+                    if maker_px > 0:
+                        lim_res, _ = await self.delta_rest(
+                            "POST",
+                            "/v2/orders",
+                            body={
+                                "product_id": product_id,
+                                "size": int(half_qty),
+                                "side": close_side,
+                                "order_type": "limit_order",
+                                "limit_price": str(_fmt_price(maker_px)),
+                                "post_only": True,
+                                "reduce_only": True,
+                            },
+                            authenticated=True,
+                        )
+                        if lim_res and isinstance(lim_res.get("result"), dict):
+                            l_obj = lim_res["result"]
+                            l_id = l_obj.get("id")
+                            l_state = str(l_obj.get("state") or "").lower()
+                            if l_state in ("closed", "filled") and float(l_obj.get("unfilled_size") or 0.0) <= 0:
+                                st2_filled = True
+                            elif l_id and l_state not in ("cancelled", "rejected"):
+                                await asyncio.sleep(1.40)
+                                chk_res, _ = await self.delta_rest("GET", f"/v2/orders/{l_id}", authenticated=True)
+                                if chk_res and isinstance(chk_res.get("result"), dict):
+                                    c_obj = chk_res["result"]
+                                    unfilled = float(c_obj.get("unfilled_size") or 0.0)
+                                    if str(c_obj.get("state") or "").lower() in ("closed", "filled") and unfilled <= 0:
+                                        st2_filled = True
+                                    else:
+                                        await self.delta_rest(
+                                            "DELETE",
+                                            "/v2/orders",
+                                            body={"id": int(l_id) if str(l_id).isdigit() else l_id, "product_id": product_id},
+                                            authenticated=True,
+                                        )
+                                        half_qty = max(0, int(round(unfilled)))
+                    if not st2_filled and half_qty > 0:
+                        await self.delta_rest(
+                            "POST",
+                            "/v2/orders",
+                            body={
+                                "product_id": product_id,
+                                "size": int(half_qty),
+                                "side": close_side,
+                                "order_type": "market_order",
+                                "reduce_only": True,
+                            },
+                            authenticated=True,
+                        )
                 elif self.exchange is not None:
                     await self.exchange.create_order(
                         delta_symbol, "market", close_side, half_qty, None, {"reduceOnly": True}
@@ -1404,8 +1490,8 @@ class DeltaIndiaLiveRouter:
                 close_res = None
                 qty_int = max(1, int(round(remaining_qty)))
                 if prefer_maker:
-                    bbo = self.live_ticker_bbo.get(delta_symbol, {})
-                    maker_px = float(bbo.get("bid") if close_side == "buy" else bbo.get("ask") or 0.0)
+                    best_bid, best_ask = await self.fetch_fresh_l2_bbo(delta_symbol)
+                    maker_px = float(best_bid if close_side == "buy" else best_ask)
                     if maker_px > 0:
                         lim_res, _ = await self.delta_rest(
                             "POST",
@@ -1428,7 +1514,7 @@ class DeltaIndiaLiveRouter:
                             if l_state in ("closed", "filled") and float(l_obj.get("unfilled_size") or 0.0) <= 0:
                                 close_res = lim_res
                             elif l_id and l_state not in ("cancelled", "rejected"):
-                                await asyncio.sleep(0.65)
+                                await asyncio.sleep(1.40)
                                 chk_res, _ = await self.delta_rest("GET", f"/v2/orders/{l_id}", authenticated=True)
                                 if chk_res and isinstance(chk_res.get("result"), dict):
                                     c_obj = chk_res["result"]
