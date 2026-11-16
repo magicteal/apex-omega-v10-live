@@ -1,9 +1,13 @@
 """
-APEX-OMEGA OS V10.5 MERGED FINAL — Alpha-5 Closed-Bar + Anti-Spike-Chase Dual-Core Engine
+APEX-OMEGA OS V11.0 LIVE-SHADOW & 1-CLICK DELTA LIVE MASTER — Triple-Core Closed-Bar Sniper Engine
 Combines:
-1. Alpha-5 Winning Pairs Only (SOL, SUI, DOGE, ADA, LINK) — drops BTC (-₹1.32L) & BNB (-₹94k) drag while keeping BTC as macro filter.
-2. Completed 5m Candle Evaluation (`full_arr[:-1]`) — eliminates 30-second intrabar wick fakeouts.
-3. Anti-Spike-Chase Safety (`cur_range <= 2.2 * atr14`) — skips blown-out parabolic candles without choking normal 5.7/day entries.
+1. Alpha-6 Winning Universe (SOL, SUI, DOGE, ADA, AVAX, LINK) with Top-5 Priority (SOL, SUI, DOGE, ADA, AVAX) and BTC as macro filter only.
+2. Completed 5m Candle Evaluation (`full_arr[:-1]`) — eliminates intrabar 1-tick wick fakeouts.
+3. Triple-Core High-Precision Confluence (96+/100):
+   - Core A: Trend Dip Sniper (RSI-2 <= 22 / >= 78 or VWAP Z <= -1.0 / >= +1.0 in aligned EMA21/50/100/200 trend)
+   - Core B: Dual-Core EMA-21 Pullback Bounce
+   - Core C: High-Velocity EMA-9 Touch Continuation (catches mid-trend impulse waves with RVOL >= 1.10 & KER >= 0.22)
+4. Anti-Spike-Chase Safety (`cur_range <= 2.2 * atr14`) — skips blown-out parabolic candles.
 """
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any
@@ -12,9 +16,18 @@ import numpy as np
 TIER1_ALPHA_SYMBOLS = {
     "SOL/USDT:USDT",
     "SUI/USDT:USDT",
-    "LINK/USDT:USDT",
     "DOGE/USDT:USDT",
     "ADA/USDT:USDT",
+    "AVAX/USDT:USDT",
+    "LINK/USDT:USDT",
+}
+
+TOP5_PRIORITY_SYMBOLS = {
+    "SOL/USDT:USDT",
+    "SUI/USDT:USDT",
+    "DOGE/USDT:USDT",
+    "ADA/USDT:USDT",
+    "AVAX/USDT:USDT",
 }
 
 
@@ -198,22 +211,60 @@ class SqueezeEngine:
         score_b_bull = 42 + tier_bonus + (24 if core_b_bull_stack else 0) + (16 if bull_pullback_touch else 0) + (11 if bull_not_overext else 0) + (5 if rvol >= 1.02 else 0)
         score_b_bear = 42 + tier_bonus + (24 if core_b_bear_stack else 0) + (16 if bear_pullback_touch else 0) + (11 if bear_not_overext else 0) + (5 if rvol >= 1.02 else 0)
 
-        bull_score = max(score_a_bull, score_b_bull)
-        bear_score = max(score_a_bear, score_b_bear)
+        # Core C: V11 High-Velocity EMA-9 Touch Continuation
+        recent_low_2 = min(float(low[-1]), float(low[-2]))
+        recent_high_2 = max(float(high[-1]), float(high[-2]))
+        core_c_bull_ok = (
+            core_a_bull_trend
+            and float(ema9[-1]) > float(ema21[-1])
+            and recent_low_2 <= float(ema9[-1]) * 1.0010
+            and green_bounce
+            and float(close[-1]) >= float(ema9[-1])
+            and -1.00 <= z_score <= 0.50
+            and rvol >= 1.10
+            and ker >= 0.22
+        )
+        core_c_bear_ok = (
+            core_a_bear_trend
+            and float(ema9[-1]) < float(ema21[-1])
+            and recent_high_2 >= float(ema9[-1]) * 0.9990
+            and red_bounce
+            and float(close[-1]) <= float(ema9[-1])
+            and -0.50 <= z_score <= 1.00
+            and rvol >= 1.10
+            and ker >= 0.22
+        )
+        score_c_bull = 97 if core_c_bull_ok else 50
+        score_c_bear = 97 if core_c_bear_ok else 50
+
+        bull_score = max(score_a_bull, score_b_bull, score_c_bull)
+        bear_score = max(score_a_bear, score_b_bear, score_c_bear)
 
         long_a_ok = core_a_bull_trend and green_bounce and (rsi2 <= 22 or z_score <= -1.00) and score_a_bull >= 96
         long_b_ok = core_b_bull_stack and bull_pullback_touch and bull_not_overext and score_b_bull >= 96
         short_a_ok = core_a_bear_trend and red_bounce and (rsi2 >= 78 or z_score >= 1.00) and score_a_bear >= 96
         short_b_ok = core_b_bear_stack and bear_pullback_touch and bear_not_overext and score_b_bear >= 96
 
-        if long_a_ok or long_b_ok:
+        if long_a_ok or long_b_ok or core_c_bull_ok:
             regime = "LONG_IGNITION"
-            setup_type = "DUAL_CORE_PULLBACK_LONG" if long_b_ok else "TREND_DIP_SNIPER_LONG"
+            setup_type = (
+                "DUAL_CORE_PULLBACK_LONG"
+                if long_b_ok
+                else "TREND_DIP_SNIPER_LONG"
+                if long_a_ok
+                else "EMA9_CONTINUATION_LONG"
+            )
             score = min(99, bull_score)
             signal_valid = True
-        elif short_a_ok or short_b_ok:
+        elif short_a_ok or short_b_ok or core_c_bear_ok:
             regime = "SHORT_IGNITION"
-            setup_type = "DUAL_CORE_PULLBACK_SHORT" if short_b_ok else "TREND_DIP_SNIPER_SHORT"
+            setup_type = (
+                "DUAL_CORE_PULLBACK_SHORT"
+                if short_b_ok
+                else "TREND_DIP_SNIPER_SHORT"
+                if short_a_ok
+                else "EMA9_CONTINUATION_SHORT"
+            )
             score = min(99, bear_score)
             signal_valid = True
         else:

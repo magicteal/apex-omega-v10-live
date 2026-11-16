@@ -147,6 +147,14 @@ class DeltaIndiaLiveRouter:
     def is_live(self) -> bool:
         return self.execution_mode == "LIVE" and bool(self.api_key) and bool(self.api_secret)
 
+    def has_credentials(self) -> bool:
+        return bool(self.api_key) and bool(self.api_secret)
+
+    def set_execution_mode(self, mode: str) -> str:
+        clean = str(mode or "SHADOW").strip().upper()
+        self.execution_mode = "LIVE" if clean == "LIVE" else "SHADOW"
+        return self.execution_mode
+
     def _sign_request(self, method: str, path: str, query_string: str = "", body_str: str = "") -> Dict[str, str]:
         timestamp = str(int(time.time()))
         sig_data = f"{method.upper()}{timestamp}{path}{query_string}{body_str}"
