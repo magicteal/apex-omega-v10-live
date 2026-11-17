@@ -32,8 +32,8 @@ class KellyRatchet:
     INITIAL_PRINCIPAL_INR = 10000.0
     HYPER_KELLY_RISK = 0.065
     THROTTLED_RISK = 0.010
-    NORMAL_MAX_LEVERAGE = 5.0
-    THROTTLED_MAX_LEVERAGE = 2.0
+    NORMAL_MAX_LEVERAGE = 3.4
+    THROTTLED_MAX_LEVERAGE = 1.8
     HWM_RETENTION_RATIO = 0.75
 
     def compute_allocation(self, active_equity: float, peak_equity: float) -> KellyAllocation:
