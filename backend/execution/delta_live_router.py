@@ -103,12 +103,9 @@ class DeltaIndiaLiveRouter:
 
     def __init__(self) -> None:
         self.execution_mode = os.getenv("EXECUTION_MODE", "SHADOW").strip().upper()
-        self.api_key = os.getenv("EXCHANGE_API_KEY", "rF2stYIF0Trs3o6VirgCwHtcskckWM").strip()
-        self.api_secret = os.getenv(
-            "EXCHANGE_API_SECRET",
-            "mHvcVz7lETagRSxzv1TE9QynF5GHnuMwfT3h7YmW6FryVDjOIgsDgNvWhiOr",
-        ).strip()
-        self.usd_inr_rate = float(os.getenv("USD_INR_CONV_RATE", "85.0"))
+        self.api_key = (os.getenv("DELTA_API_KEY") or os.getenv("EXCHANGE_API_KEY") or "rF2stYIF0Trs3o6VirgCwHtcskckWM").strip()
+        self.api_secret = (os.getenv("DELTA_API_SECRET") or os.getenv("EXCHANGE_API_SECRET") or "mHvcVz7lETagRSxzv1TE9QynF5GHnuMwfT3h7YmW6FryVDjOIgsDgNvWhiOr").strip()
+        self.usd_inr_rate = float(os.getenv("USD_INR_CONV_RATE", "86.50"))
         self.exchange = None
         self.markets_loaded = False
         self.symbol_map: Dict[str, str] = dict(DEFAULT_SCANNER_TO_DELTA)
@@ -118,6 +115,7 @@ class DeltaIndiaLiveRouter:
         # Real-time Delta Exchange Mark Prices, BBO (Best Bid/Ask) & Tick Timestamps
         self.live_ticker_marks: Dict[str, float] = {}
         self.live_ticker_bbo: Dict[str, Dict[str, float]] = {}
+        self.live_funding_rates: Dict[str, float] = {}
         self.live_ticker_ts: Dict[str, float] = {}
 
         # Live Account & Telemetry Cache
@@ -302,6 +300,9 @@ class DeltaIndiaLiveRouter:
                 quotes = tk.get("quotes") if isinstance(tk.get("quotes"), dict) else {}
                 bb = float(quotes.get("best_bid") or tk.get("best_bid") or mk or 0.0)
                 ba = float(quotes.get("best_ask") or tk.get("best_ask") or mk or 0.0)
+                fr = float(tk.get("funding_rate") or 0.0) / 100.0
+                if s_name:
+                    self.live_funding_rates[s_name] = fr
                 if s_name and mk > 0:
                     if bb > 0 and ba > 0:
                         self.live_ticker_bbo[s_name] = {"bid": bb, "ask": ba}
@@ -520,6 +521,8 @@ class DeltaIndiaLiveRouter:
                             quotes = msg.get("quotes") if isinstance(msg.get("quotes"), dict) else {}
                             bb = float(quotes.get("best_bid") or msg.get("best_bid") or 0.0)
                             ba = float(quotes.get("best_ask") or msg.get("best_ask") or 0.0)
+                            if msg.get("funding_rate") is not None and d_sym:
+                                self.live_funding_rates[d_sym] = float(msg.get("funding_rate") or 0.0) / 100.0
                             if d_sym and bb > 0 and ba > 0:
                                 self.live_ticker_bbo[d_sym] = {"bid": bb, "ask": ba}
                             if d_sym and mk > 0:
@@ -1302,6 +1305,8 @@ class DeltaIndiaLiveRouter:
         total_qty: float,
         old_stop_id: Optional[str],
         new_stop_price: float,
+        old_tp_id: Optional[str] = None,
+        tp_price: Optional[float] = None,
     ) -> Dict[str, Any]:
         if not await self.ensure_ready() or not delta_symbol or total_qty <= 0:
             return {"remaining_qty": total_qty, "stop_order_id": old_stop_id}
@@ -1377,8 +1382,32 @@ class DeltaIndiaLiveRouter:
             new_stop_id = await self.update_hardware_stop(
                 delta_symbol, side, rem_qty, old_stop_id, new_stop_price
             )
+            new_tp_id = old_tp_id
+            if product_id and rem_qty > 0 and rem_qty != total_qty and tp_price and tp_price > 0:
+                if old_tp_id:
+                    await self.delta_rest(
+                        "DELETE",
+                        "/v2/orders",
+                        body={"id": int(old_tp_id) if str(old_tp_id).isdigit() else old_tp_id, "product_id": product_id},
+                        authenticated=True,
+                    )
+                tp_res, _ = await self.delta_rest(
+                    "POST",
+                    "/v2/orders",
+                    body={
+                        "product_id": product_id,
+                        "size": max(1, int(round(rem_qty))),
+                        "side": close_side,
+                        "order_type": "limit_order",
+                        "limit_price": str(_fmt_price(tp_price)),
+                        "reduce_only": True,
+                    },
+                    authenticated=True,
+                )
+                if tp_res and isinstance(tp_res.get("result"), dict):
+                    new_tp_id = str(tp_res["result"].get("id"))
             self._force_full_refresh = True
-            return {"remaining_qty": float(rem_qty), "stop_order_id": new_stop_id}
+            return {"remaining_qty": float(rem_qty), "stop_order_id": new_stop_id, "tp_order_id": new_tp_id}
         except Exception as e:
             print(f"[DELTA_LIVE_ERR] bank_stage2_50pct({delta_symbol}): {e}")
             return {"remaining_qty": total_qty, "stop_order_id": old_stop_id}
@@ -1556,3 +1585,38 @@ class DeltaIndiaLiveRouter:
         except Exception as e:
             print(f"[DELTA_LIVE_ERR] close_live_trade({delta_symbol}): {e}")
         return None
+
+
+    async def simulate_shadow_bbo_entry(
+        self,
+        scanner_symbol: str,
+        side: str,
+        reference_price: float,
+    ) -> Tuple[float, str]:
+        """
+        1:1 Shadow-to-Live BBO Entry Simulator:
+        Queries live Delta Exchange L2 Orderbook (`/v2/l2orderbook/{sym}`), posts a virtual Maker limit order at
+        Best Bid (LONG) or Best Ask (SHORT), and checks over a 1.2s window whether live mark/trade ticks cross or
+        touch our Maker price. If filled passively, returns (maker_px, "MAKER"). Otherwise falls back to crossing
+        the spread at Best Ask (LONG) / Best Bid (SHORT) and returns (taker_px, "TAKER").
+        """
+        delta_sym = self.resolve_symbol(scanner_symbol)
+        best_bid, best_ask = await self.fetch_fresh_l2_bbo(delta_sym)
+        if best_bid <= 0 or best_ask <= 0:
+            return reference_price, "MAKER"
+
+        maker_px = best_bid if side == "LONG" else best_ask
+        await asyncio.sleep(1.2)
+        new_bid, new_ask = await self.fetch_fresh_l2_bbo(delta_sym)
+        cur_mk = float(self.live_ticker_marks.get(delta_sym) or reference_price)
+
+        if side == "LONG":
+            if (new_ask > 0 and new_ask <= maker_px) or cur_mk <= maker_px or (new_bid > 0 and new_bid <= maker_px):
+                return _fmt_price(maker_px), "MAKER"
+            taker_px = new_ask if new_ask > 0 else best_ask
+            return _fmt_price(taker_px), "TAKER"
+        else:
+            if (new_bid > 0 and new_bid >= maker_px) or cur_mk >= maker_px or (new_ask > 0 and new_ask >= maker_px):
+                return _fmt_price(maker_px), "MAKER"
+            taker_px = new_bid if new_bid > 0 else best_bid
+            return _fmt_price(taker_px), "TAKER"

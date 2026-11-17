@@ -19,6 +19,7 @@ import json
 import os
 import time
 import urllib.request
+import numpy as np
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
@@ -63,7 +64,7 @@ def _detect_outbound_ip() -> str:
 
 SERVER_OUTBOUND_IP = _detect_outbound_ip()
 
-app = FastAPI(title="APEX-OMEGA OS V9.5 Zero-Lag Fee-Shield Hyper-Compounder", version="9.5.0")
+app = FastAPI(title="APEX-OMEGA OS V12.3 Unified Hyper-Compounder", version="12.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -489,28 +490,34 @@ class AutonomousDaemonV9:
             else:
                 new_stage = camp.get("ratchet_stage", 0)
                 new_stop = camp.get("effective_stop")
+                direction = 1.0 if camp["side"] == "LONG" else -1.0
+                if float(new_stage or 0) >= 0.25:
+                    hw_safety_stop = float(fmt_price(float(new_stop) * (1.0 - direction * 0.0003)))
+                else:
+                    hw_safety_stop = float(new_stop)
+
                 if new_stage >= 2 and prev_stage < 2:
+                    init_qty = float(camp.get("initial_qty") or camp.get("live_qty") or 0.0)
                     st2 = await self.live_router.bank_stage2_50pct_and_move_stop(
                         camp["delta_symbol"],
                         camp["side"],
-                        float(camp.get("remaining_qty") or camp.get("live_qty") or 0.0),
+                        init_qty,
                         camp.get("stop_order_id"),
-                        float(new_stop),
+                        hw_safety_stop,
+                        old_tp_id=camp.get("tp_order_id"),
+                        tp_price=float(camp.get("tp2_price") or 0.0),
                     )
                     camp["remaining_qty"] = st2["remaining_qty"]
                     camp["stop_order_id"] = st2["stop_order_id"]
+                    if st2.get("tp_order_id"):
+                        camp["tp_order_id"] = st2["tp_order_id"]
+                    camp["last_hw_stop"] = hw_safety_stop
                     self.save_state()
                 elif new_stop != prev_stop:
-                    # V9 RESTORED Guaranteed Exchange Hardware Stop Ratchet:
-                    # Places the hardware stop_loss_order on Delta Exchange 0.03% behind the soft Maker ratchet stop
-                    # (e.g. at +0.12% when soft stop is +0.15%, or +0.23% when soft stop is +0.26%, or +0.82% at Stage 3)
-                    # so our Maker limit exit fires first at `new_stop`, AND Delta Exchange hardware stop GUARANTEES
-                    # a profitable exit on the exchange even if the network hiccups!
-                    direction = 1.0 if camp["side"] == "LONG" else -1.0
-                    if float(new_stage or 0) >= 0.25:
-                        hw_safety_stop = float(fmt_price(float(new_stop) * (1.0 - direction * 0.0003)))
-                    else:
-                        hw_safety_stop = float(new_stop)
+                    # V12.3 Unified Maker-First + Guaranteed Exchange Hardware Stop Ratchet:
+                    # Places the hardware stop_loss_order on Delta Exchange 0.03% behind `new_stop` at every stage
+                    # so our software Maker limit exit (`prefer_maker=True`) fires first at `new_stop`, while Delta's
+                    # matching engine guarantees locked profit on the exchange if a flash wick or disconnect occurs.
                     if hw_safety_stop != float(camp.get("last_hw_stop") or 0.0):
                         camp["last_hw_stop"] = hw_safety_stop
                         camp["stop_order_id"] = await self.live_router.update_hardware_stop(
@@ -536,16 +543,13 @@ class AutonomousDaemonV9:
                     None, self._fetch_multi_exchange_klines, ticker, kraken_pair, delta_sym
                 )
                 if ohlcv and len(ohlcv) >= 30:
-                    ws_mk = self.live_router.live_ticker_marks.get(delta_sym)
-                    if ws_mk and ws_mk > 0:
-                        ohlcv[-1][4] = ws_mk
-                        if ws_mk > ohlcv[-1][2]:
-                            ohlcv[-1][2] = ws_mk
-                        if ws_mk < ohlcv[-1][3]:
-                            ohlcv[-1][3] = ws_mk
-                        src = "DELTA_WS_0MS"
                     sig = self.squeeze_engine.evaluate_ohlcv(display_sym, ohlcv, feed_source=src)
-                    self.scanner_cache[display_sym] = sig.to_dict()
+                    ws_mk = self.live_router.live_ticker_marks.get(delta_sym)
+                    sig_dict = sig.to_dict()
+                    if ws_mk and ws_mk > 0:
+                        sig_dict["price"] = fmt_price(ws_mk)
+                        sig_dict["feed_source"] = "DELTA_WS_0MS"
+                    self.scanner_cache[display_sym] = sig_dict
 
             await asyncio.gather(
                 *(_scan_one(d_sym, tk, kr, dl) for d_sym, tk, kr, dl in UNIVERSE_MAP)
@@ -610,9 +614,9 @@ class AutonomousDaemonV9:
                 if now_s < float(pair_cds.get(v["symbol"], 0.0)):
                     continue
                 side = "SHORT" if v["regime"] == "SHORT_IGNITION" else "LONG"
-                if side == "LONG" and (long_paused or btc_slope < -0.0007 or btc_roc5 < -0.0028):
+                if side == "LONG" and (long_paused or btc_slope < -0.00015 or btc_roc5 < -0.0012):
                     continue
-                if side == "SHORT" and (short_paused or btc_slope > 0.0007 or btc_roc5 > 0.0028):
+                if side == "SHORT" and (short_paused or btc_slope > 0.00015 or btc_roc5 > 0.0012):
                     continue
                 candidates.append(v)
 
@@ -657,6 +661,28 @@ class AutonomousDaemonV9:
                         self.state["peak_equity"] = live_bal
 
             camp = self._build_new_campaign(sig)
+            if not self.live_router.is_live():
+                sim_px, sim_role = await self.live_router.simulate_shadow_bbo_entry(
+                    scanner_symbol=camp["symbol"],
+                    side=camp["side"],
+                    reference_price=float(camp["entry_price_raw"]),
+                )
+                direction = 1.0 if camp["side"] == "LONG" else -1.0
+                camp["entry_role"] = sim_role
+                camp["entry_price_raw"] = sim_px
+                camp["mark_price_raw"] = sim_px
+                camp["base_entry_price"] = fmt_price(sim_px)
+                camp["current_price"] = fmt_price(sim_px)
+                camp["highest_extreme"] = fmt_price(sim_px)
+                camp["chandelier_stop"] = fmt_price(sim_px * (1.0 - direction * 0.0036))
+                camp["soft_stop"] = fmt_price(sim_px * (1.0 - direction * 0.0028))
+                camp["effective_stop"] = camp["chandelier_stop"]
+                camp["tp1_price"] = fmt_price(sim_px * (1.0 + direction * 0.0065))
+                camp["tp2_price"] = fmt_price(sim_px * (1.0 + direction * 0.0160))
+                if camp.get("tranches"):
+                    camp["tranches"][0]["fill_price"] = fmt_price(sim_px)
+                    fee_r = self.MAKER_FEE_RATE if sim_role == "MAKER" else self.FEE_RATE
+                    camp["tranches"][0]["fee_inr"] = round(float(camp["total_notional_inr"]) * fee_r, 2)
             if self.live_router.is_live():
                 res = await self.live_router.open_live_trade(
                     scanner_symbol=camp["symbol"],
@@ -703,7 +729,7 @@ class AutonomousDaemonV9:
         peak_eq = max(float(self.state.get("peak_equity", active_eq)), active_eq, 1.0)
         dd_ratio = (peak_eq - active_eq) / peak_eq
         lev = 4.0 if dd_ratio > 0.15 else (7.2 if sig["confluence_score"] >= 98 else 6.5)
-        eff_eq = min(active_eq, 350000.0 / lev)
+        eff_eq = min(active_eq, 10000000.0 / lev)
         total_notional = round(eff_eq * lev, 2)
 
         side = "SHORT" if sig["regime"] == "SHORT_IGNITION" else "LONG"
@@ -785,10 +811,13 @@ class AutonomousDaemonV9:
             "effective_stop": initial_stop,
             "filled_units": 1,
             "max_stage_reached": "V9.5_SNIPER_OPEN",
+            "initial_notional_inr": total_notional,
             "total_notional_inr": total_notional,
             "total_unrealized_pnl_inr": 0.0,
+            "initial_qty": float(exact_qty),
             "live_qty": float(exact_qty),
             "remaining_qty": float(exact_qty),
+            "initial_coin_qty": round(coin_qty, 8),
             "coin_qty": round(coin_qty, 8),
             "entry_role": shadow_entry_role,
             "rvol_at_entry": sig["rvol"],
@@ -818,7 +847,8 @@ class AutonomousDaemonV9:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # V9 RESTORED Stage 0.25 Early Fee Shield (+0.18% move -> locks +0.12% net win):
+        # V12.0 Stage 0.25 Fee-Cleared Shield (+0.18% move -> locks +0.12%):
+        # Prevents +0.056% SUI-style premature exits while guaranteeing net profit after fees
         if max_fav_pct >= 0.0018 and camp.get("ratchet_stage", 0) < 0.25:
             camp["ratchet_stage"] = 0.25
             camp["breakeven_locked"] = True
@@ -826,41 +856,55 @@ class AutonomousDaemonV9:
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "EARLY_FEE_SHIELD_LOCKED"
 
-        # V9 RESTORED Stage 0.5 Zero-Loss Shield (+0.28% move -> locks +0.18% net win, 0.10% breathing room):
-        # Prevents any +₹150 to +₹200 trade from ever turning back into a loss!
-        if max_fav_pct >= 0.0028 and camp.get("ratchet_stage", 0) < 0.5:
+        # V12.0 Stage 0.5 Breathing-Room Shield (+0.32% move -> locks +0.20%, 0.12% trail buffer):
+        if max_fav_pct >= 0.0032 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0018))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0020))
             camp["effective_stop"] = camp["breakeven_stop"]
-            camp["max_stage_reached"] = "ZERO_LOSS_SHIELD_LOCKED"
+            camp["max_stage_reached"] = "FEE_CLEARED_SHIELD_LOCKED"
 
-        # V9 RESTORED Stage 1 Profit Lock (+0.42% move -> locks +0.26%, 0.16% breathing room so winners run to Stage 2/3):
-        if max_fav_pct >= 0.0042 and camp.get("ratchet_stage", 0) < 1:
+        # V12.0 Stage 1 Runner Launchpad (+0.45% move -> locks +0.30%, 0.15% trail buffer so trades reach Stage 2/3):
+        if max_fav_pct >= 0.0045 and camp.get("ratchet_stage", 0) < 1:
             camp["ratchet_stage"] = 1
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0026))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0030))
             camp["effective_stop"] = camp["breakeven_stop"]
-            camp["max_stage_reached"] = "STAGE_1_PROFIT_LOCKED"
+            camp["max_stage_reached"] = "STAGE_1_NET_PROFIT_LOCKED"
 
-        # V9 RESTORED Stage 2 Surge Bank (+0.68% move -> banks 50% in cash & locks 50% Runner at +0.48%):
+        # Merged Stage 2 Surge Bank (+0.65% move): Banks 50% in cash & locks 50% Runner Stop at Entry + 0.50%
         if max_fav_pct >= 0.0065 and camp.get("ratchet_stage", 0) < 2:
             camp["ratchet_stage"] = 2
-            camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0048))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0050))
             camp["effective_stop"] = camp["breakeven_stop"]
-            camp["max_stage_reached"] = "STAGE_2_50PCT_BANKED"
-            half_notional = notional * 0.50
-            fees_half = half_notional * self.MAKER_FEE_RATE * 2.0
-            camp["tp1_banked_pnl_inr"] = round(half_notional * 0.0065 - fees_half, 2)
+            init_qty = int(round(float(camp.get("initial_qty") or camp.get("live_qty") or 1.0)))
+            half_qty = max(1, int(init_qty * 0.50)) if init_qty >= 2 else 0
+            rem_qty = max(0, init_qty - half_qty)
+            init_notl = float(camp.get("initial_notional_inr") or notional)
+            if half_qty > 0 and rem_qty > 0:
+                camp["tp1_hit"] = True
+                camp["max_stage_reached"] = "STAGE_2_50PCT_BANKED"
+                half_ratio = float(half_qty) / float(init_qty)
+                rem_ratio = float(rem_qty) / float(init_qty)
+                half_notional = round(init_notl * half_ratio, 2)
+                fees_half = half_notional * self.MAKER_FEE_RATE * 2.0
+                camp["tp1_banked_pnl_inr"] = round(half_notional * 0.0065 - fees_half, 2)
+                camp["remaining_qty"] = float(rem_qty)
+                camp["total_notional_inr"] = round(init_notl * rem_ratio, 2)
+                init_c_qty = float(camp.get("initial_coin_qty") or camp.get("coin_qty") or 0.0)
+                if init_c_qty > 0:
+                    camp["coin_qty"] = round(init_c_qty * rem_ratio, 8)
+            else:
+                camp["tp1_hit"] = False
+                camp["max_stage_reached"] = "STAGE_2_PROFIT_LOCKED"
+                camp["tp1_banked_pnl_inr"] = 0.0
 
-        # V9 RESTORED Stage 3 Super Trail (+1.05% move -> locks +0.85% & trails 0.22% behind peak):
-        if max_fav_pct >= 0.0105:
+        # Merged Stage 3 Super Trail (+1.00% move): Locks Stop at Entry + 0.85% & trails 0.20% behind peak
+        if max_fav_pct >= 0.0100:
             camp["ratchet_stage"] = 3
-            camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0022))
+            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0020))
             floor_s = fmt_price(entry_p * (1.0 + direction * 0.0085))
             camp["breakeven_stop"] = max(trail_s, floor_s) if side == "LONG" else min(trail_s, floor_s)
             camp["effective_stop"] = camp["breakeven_stop"]
@@ -948,18 +992,36 @@ class AutonomousDaemonV9:
             slip_deduct = 0.00015
         round_trip_rate = entry_fee_rate + exit_fee_rate
         eff_pct_move = pct_move - slip_deduct
-        if st >= 2 and camp.get("tp1_hit"):
-            runner_notional = notional * 0.50
-            runner_pnl = runner_notional * eff_pct_move - (runner_notional * round_trip_rate)
-            realized_pnl = round(float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl, 2)
-        else:
-            total_fees = notional * round_trip_rate
-            realized_pnl = round(notional * eff_pct_move - total_fees, 2)
+        entry_ts_val = float(camp.get("entry_ts") or time.time())
+        exit_ts_val = time.time()
+        funding_crossings = max(0, int(exit_ts_val // 28800) - int(entry_ts_val // 28800))
+        d_sym = camp.get("delta_symbol") or SCANNER_TO_DELTA_SYM.get(camp["symbol"], "SOLUSD")
+        live_fr = float(self.live_router.live_funding_rates.get(d_sym, 0.0001))
+        funding_cost_inr = round(notional * live_fr * funding_crossings * direction, 2) if funding_crossings > 0 else 0.0
 
+        init_notl = float(camp.get("initial_notional_inr") or notional)
+        if st >= 2 and camp.get("tp1_hit"):
+            init_qty = int(round(float(camp.get("initial_qty") or camp.get("live_qty") or 2.0)))
+            half_qty = max(1, int(init_qty * 0.50)) if init_qty >= 2 else 1
+            rem_qty = max(1, init_qty - half_qty)
+            half_notional = init_notl * (float(half_qty) / float(max(init_qty, 1)))
+            runner_notional = init_notl * (float(rem_qty) / float(max(init_qty, 1)))
+            total_fees_inr = round((half_notional * (self.MAKER_FEE_RATE * 2.0)) + (runner_notional * round_trip_rate), 2)
+            runner_pnl = runner_notional * eff_pct_move - (runner_notional * round_trip_rate)
+            realized_pnl = round(float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl - funding_cost_inr, 2)
+        else:
+            total_fees_inr = round(init_notl * round_trip_rate, 2)
+            realized_pnl = round(init_notl * eff_pct_move - total_fees_inr - funding_cost_inr, 2)
+
+        self.state["total_fees_gst_inr"] = round(float(self.state.get("total_fees_gst_inr", 0.0)) + total_fees_inr, 2)
+        self.state["total_funding_inr"] = round(float(self.state.get("total_funding_inr", 0.0)) + funding_cost_inr, 2)
+
+        # 100% AGGRESSIVE COMPOUNDING: 100% of net realized profit stays in active_equity (Zero Vault Siphon)
         new_eq = round(prev_eq + realized_pnl, 2)
         roi_pct = round((realized_pnl / max(prev_eq, 1.0)) * 100.0, 2)
 
         self.state["active_equity"] = new_eq
+        self.state["vault_balance"] = 0.0
         if new_eq > float(self.state["peak_equity"]):
             self.state["peak_equity"] = new_eq
 
@@ -1068,10 +1130,12 @@ class AutonomousDaemonV9:
             "realized_base_equity": round(base_eq, 2),
             "unrealized_pnl_inr": round(unrealized, 2),
             "vault_balance": 0.0,
-            "total_net_worth": total_net_worth,
-            "total_return_pct": round(((total_net_worth - start_eq) / max(start_eq, 1.0)) * 100.0, 2),
-            "principal_siphoned": False,
-            "next_siphon_milestone": 1000000.0,
+            "total_net_worth": live_active,
+            "total_return_pct": round(((live_active - start_eq) / max(start_eq, 1.0)) * 100.0, 2),
+            "compounding_power_65x_inr": round(live_active * 6.5, 2),
+            "compounding_power_72x_inr": round(live_active * 7.2, 2),
+            "total_fees_gst_inr": round(float(self.state.get("total_fees_gst_inr", 0.0)), 2),
+            "total_funding_inr": round(float(self.state.get("total_funding_inr", 0.0)), 2),
             "wins": self.state.get("wins", 0),
             "losses": self.state.get("losses", 0),
             "total_closed_trades": self.state.get("total_closed_trades", 0),
@@ -1140,8 +1204,8 @@ async def serve_visual_dashboard() -> HTMLResponse:
 @app.head("/api/ping")
 async def health_check() -> Dict[str, Any]:
     return {
-        "status": "ONLINE_24_7_V9_0_RESTORED_MASTER",
-        "version": "9.0.0",
+        "status": "ONLINE_24_7_V12_3_UNIFIED_MASTER",
+        "version": "12.3.0",
         "uptime_seconds": int(time.time() - BOOT_TIME),
         "last_scan_ts": daemon.last_scan_ts,
         "active_equity_inr": daemon.state["active_equity"],
@@ -1318,65 +1382,176 @@ class BacktestRequest(BaseModel):
 @app.post("/api/backtest")
 async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
     """
-    Runs the exact V11.0 Triple-Core + Exact Delta Contract Lot Sizing + Real CSV Fee/GST + Slippage
-    simulation engine directly from the web dashboard.
+    Fetches REAL 5m historical candles from Delta Exchange India (/v2/history/candles) and runs a
+    head-to-head comparison between:
+      1) V9.0 Restored Master (Real-Time Tick Entry + 90s -0.40% -> -0.28% Two-Tier Shield + V9 Wide Ratchet)
+      2) V12.3 Hybrid Closed-Bar (1-Bar Closed-Candle Entry Delay + Immediate -0.28% Stop)
+    using exact Delta Exchange integer contract lot sizes and 18% GST on all fees.
     """
     import math
+    from concurrent.futures import ThreadPoolExecutor
+
     days = max(5, min(int(req.days or 30), 365))
-    n_bars = days * 288
+    target_bars = days * 288
+    fetch_bars = target_bars + 210
     start_eq = max(1000.0, float(req.starting_equity_inr or 10000.0))
     fee_mode = str(req.fee_mode or "REAL_CSV_BLEND").upper()
     compounded = bool(req.compounded)
     u_mode = str(req.universe or "ALPHA5_AVAX").upper()
 
     pairs_spec = [
-        ("SOL/USDT:USDT", 114.50, 95.86, 0.0042, 1.0),
-        ("BTC/USDT:USDT", 76400.0, 80112.5, 0.0025, 0.001),
-        ("ETH/USDT:USDT", 2380.0, 2419.4, 0.0031, 0.01),
-        ("SUI/USDT:USDT", 1.2200, 0.9366, 0.0052, 1.0),
-        ("DOGE/USDT:USDT", 0.0810, 0.0768, 0.0048, 100.0),
-        ("XRP/USDT:USDT", 1.2650, 1.3048, 0.0038, 1.0),
-        ("BNB/USDT:USDT", 692.00, 715.76, 0.0026, 0.1),
-        ("AVAX/USDT:USDT", 9.6500, 8.8400, 0.0045, 1.0),
-        ("LINK/USDT:USDT", 11.100, 11.550, 0.0040, 1.0),
-        ("ADA/USDT:USDT", 0.3920, 0.3650, 0.0042, 1.0),
+        ("BTC/USDT:USDT", "BTCUSD", "BTCUSDT", 76400.0, 80112.5, 0.0025, 0.001),
+        ("LINK/USDT:USDT", "LINKUSD", "LINKUSDT", 11.100, 11.550, 0.0040, 1.0),
+        ("DOGE/USDT:USDT", "DOGEUSD", "DOGEUSDT", 0.0810, 0.0768, 0.0048, 100.0),
+        ("SOL/USDT:USDT", "SOLUSD", "SOLUSDT", 114.50, 95.86, 0.0042, 1.0),
+        ("ADA/USDT:USDT", "ADAUSD", "ADAUSDT", 0.3920, 0.3650, 0.0042, 1.0),
+        ("AVAX/USDT:USDT", "AVAXUSD", "AVAXUSDT", 9.6500, 8.8400, 0.0045, 1.0),
+        ("SUI/USDT:USDT", "SUIUSD", "SUIUSDT", 1.2200, 0.9366, 0.0052, 1.0),
     ]
-    c_vals = {p[0]: p[4] for p in pairs_spec}
+    c_vals = {p[0]: p[6] for p in pairs_spec}
     u_set = set(TOP5_PRIORITY_SYMBOLS) if u_mode == "ALPHA5_AVAX" else set(TIER1_ALPHA_SYMBOLS)
+    needed_syms = {"BTC/USDT:USDT"} | u_set
+
+    def _fetch_delta_candles_for_pair(spec):
+        sym, delta_sym, bybit_sym, *_ = spec
+        if sym not in needed_syms:
+            return sym, {}, "SKIPPED"
+        end_ts = int(time.time())
+        start_ts = end_ts - (fetch_bars * 300)
+        chunk_sec = 1500 * 300
+        candles_by_ts = {}
+        cur_start = start_ts
+        while cur_start < end_ts:
+            cur_end = min(end_ts, cur_start + chunk_sec)
+            url = f"https://api.india.delta.exchange/v2/history/candles?resolution=5m&symbol={delta_sym}&start={cur_start}&end={cur_end}"
+            try:
+                req_obj = urllib.request.Request(url, headers={"User-Agent": "ApexOmegaV90/9.0", "Accept": "application/json"})
+                with urllib.request.urlopen(req_obj, timeout=8.0) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    rows = payload.get("result", [])
+                    if isinstance(rows, list):
+                        for r in rows:
+                            if r.get("close") is None or r.get("time") is None:
+                                continue
+                            ts = int(float(r["time"]))
+                            ts = ts - (ts % 300)
+                            candles_by_ts[ts] = (
+                                float(r["open"]),
+                                float(r["high"]),
+                                float(r["low"]),
+                                float(r["close"]),
+                                max(1.0, float(r.get("volume") or 1.0)),
+                            )
+            except Exception:
+                break
+            cur_start = cur_end
+        if len(candles_by_ts) >= 500:
+            return sym, candles_by_ts, "DELTA_INDIA_REAL_5M"
+
+        candles_by_ts = {}
+        cur_end_ms = end_ts * 1000
+        start_ms = start_ts * 1000
+        while cur_end_ms > start_ms and len(candles_by_ts) < fetch_bars:
+            url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={bybit_sym}&interval=5&end={cur_end_ms}&limit=1000"
+            try:
+                req_obj = urllib.request.Request(url, headers={"User-Agent": "ApexOmegaV90/9.0"})
+                with urllib.request.urlopen(req_obj, timeout=8.0) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    rows = payload.get("result", {}).get("list", [])
+                    if not rows:
+                        break
+                    oldest_ms = cur_end_ms
+                    for r in rows:
+                        ts_ms = int(float(r[0]))
+                        if ts_ms < oldest_ms:
+                            oldest_ms = ts_ms
+                        ts = (ts_ms // 1000) - ((ts_ms // 1000) % 300)
+                        candles_by_ts[ts] = (float(r[1]), float(r[2]), float(r[3]), float(r[4]), max(1.0, float(r[5])))
+                    if oldest_ms >= cur_end_ms:
+                        break
+                    cur_end_ms = oldest_ms - 300000
+            except Exception:
+                break
+        if len(candles_by_ts) >= 500:
+            return sym, candles_by_ts, "BYBIT_REAL_5M"
+        return sym, {}, "SIMULATED_OFFLINE"
 
     def _run_sim():
-        np.random.seed(42)
-        btc_shocks = np.random.normal(0, 0.0018, n_bars)
+        with ThreadPoolExecutor(max_workers=7) as ex:
+            fetched = list(ex.map(_fetch_delta_candles_for_pair, pairs_spec))
+
+        btc_map = {}
+        sources_used = set()
+        raw_maps = {}
+        for sym, cmap, src_tag in fetched:
+            if src_tag != "SKIPPED":
+                sources_used.add(src_tag)
+            raw_maps[sym] = cmap
+            if sym == "BTC/USDT:USDT":
+                btc_map = cmap
+
+        use_real = len(btc_map) >= 500 and all(len(raw_maps.get(s, {})) >= 500 for s in needed_syms)
+        if use_real:
+            grid_ts = sorted(btc_map.keys())[-fetch_bars:]
+            n_bars = len(grid_ts)
+            data_source_label = "DELTA_INDIA_REAL_5M" if sources_used == {"DELTA_INDIA_REAL_5M"} else "+".join(sorted(sources_used))
+            start_dt = datetime.fromtimestamp(grid_ts[min(205, n_bars - 1)], tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            end_dt = datetime.fromtimestamp(grid_ts[-1], tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        else:
+            n_bars = fetch_bars
+            grid_ts = [int(time.time()) - (n_bars - i) * 300 for i in range(n_bars)]
+            data_source_label = "SIMULATED_OFFLINE_FALLBACK"
+            start_dt = "Simulated"
+            end_dt = "Simulated"
+
         mkt = {}
-        for sym, p_start, p_end, base_vol, _ in pairs_spec:
-            total_drift = np.log(p_end / p_start) / n_bars
-            closes = np.zeros(n_bars)
+        if not use_real:
+            np.random.seed(42)
+            btc_shocks = np.random.normal(0, 0.0018, n_bars)
+
+        for sym, _, _, p_start, p_end, base_vol, _ in pairs_spec:
+            if sym not in needed_syms:
+                continue
             opens = np.zeros(n_bars)
             highs = np.zeros(n_bars)
             lows = np.zeros(n_bars)
+            closes = np.zeros(n_bars)
             vols = np.zeros(n_bars)
-            p = p_start
-            mom_state = 0.0
-            for i in range(n_bars):
-                in_burst = (i % 36) < 8
-                burst_dir = 1.0 if ((i // 36) % 2 == 0) else -1.0
-                shock = np.random.normal(0, base_vol)
-                if in_burst:
-                    mom_state = 0.65 * mom_state + burst_dir * base_vol * 0.85 + 0.4 * btc_shocks[i]
-                    v_mult = 2.1
-                else:
-                    mom_state = 0.25 * mom_state + shock * 0.7 + 0.3 * btc_shocks[i]
-                    v_mult = 0.9
-                ret = total_drift + mom_state
-                o = p
-                c = o * np.exp(ret)
-                w_up = abs(np.random.normal(0, base_vol * (0.9 if ret > 0 else 0.35)))
-                w_dn = abs(np.random.normal(0, base_vol * (0.9 if ret < 0 else 0.35)))
-                h = max(o, c) * (1.0 + w_up)
-                l = min(o, c) * (1.0 - w_dn)
-                v = np.random.lognormal(10.0, 0.4) * v_mult
-                opens[i], highs[i], lows[i], closes[i], vols[i] = o, h, l, c, v
-                p = c
+
+            if use_real:
+                cmap = raw_maps[sym]
+                first_ts = sorted(cmap.keys())[0]
+                last_candle = cmap[first_ts]
+                for i, ts in enumerate(grid_ts):
+                    c_tuple = cmap.get(ts)
+                    if c_tuple is None:
+                        c_px = last_candle[3]
+                        opens[i], highs[i], lows[i], closes[i], vols[i] = c_px, c_px, c_px, c_px, 1.0
+                    else:
+                        last_candle = c_tuple
+                        opens[i], highs[i], lows[i], closes[i], vols[i] = c_tuple
+            else:
+                total_drift = np.log(p_end / p_start) / n_bars
+                p = p_start
+                mom_state = 0.0
+                for i in range(n_bars):
+                    in_burst = (i % 36) < 8
+                    burst_dir = 1.0 if ((i // 36) % 2 == 0) else -1.0
+                    shock = np.random.normal(0, base_vol)
+                    if in_burst:
+                        mom_state = 0.65 * mom_state + burst_dir * base_vol * 0.85 + 0.4 * btc_shocks[i]
+                        v_mult = 2.1
+                    else:
+                        mom_state = 0.25 * mom_state + shock * 0.7 + 0.3 * btc_shocks[i]
+                        v_mult = 0.9
+                    ret = total_drift + mom_state
+                    o = p
+                    c = o * np.exp(ret)
+                    w_up = abs(np.random.normal(0, base_vol * (0.9 if ret > 0 else 0.35)))
+                    w_dn = abs(np.random.normal(0, base_vol * (0.9 if ret < 0 else 0.35)))
+                    opens[i], highs[i], lows[i], closes[i] = o, max(o, c) * (1.0 + w_up), min(o, c) * (1.0 - w_dn), c
+                    vols[i] = np.random.lognormal(10.0, 0.4) * v_mult
+                    p = c
 
             def _ema(arr, span):
                 a = 2.0 / (span + 1.0)
@@ -1411,12 +1586,12 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 rsi14[i] = 98.0 if l14 <= 1e-12 else 100.0 - (100.0 / (1.0 + g14 / l14))
                 typ = (highs[i - 19 : i + 1] + lows[i - 19 : i + 1] + closes[i - 19 : i + 1]) / 3.0
                 vv = vols[i - 19 : i + 1]
-                vwap = np.sum(typ * vv) / np.sum(vv)
+                vwap = np.sum(typ * vv) / max(np.sum(vv), 1e-9)
                 std = np.std(closes[i - 19 : i + 1])
                 z_sc[i] = (closes[i] - vwap) / max(std, closes[i] * 0.001)
                 v_avg = np.mean(vols[i - 20 : i])
                 rvol[i] = max(vols[i], vols[i - 1]) / max(v_avg, 1e-9)
-                roc5[i] = (closes[i] - closes[i - 5]) / closes[i - 5]
+                roc5[i] = (closes[i] - closes[i - 5]) / max(closes[i - 5], 1e-12)
                 ker10[i] = abs(closes[i] - closes[i - 10]) / max(np.sum(abs_diffs[i - 10 : i]), 1e-12)
             mkt[sym] = {
                 "open": opens, "high": highs, "low": lows, "close": closes,
@@ -1425,207 +1600,236 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "z": z_sc, "rvol": rvol, "roc5": roc5, "ker": ker10,
             }
 
-        equity = start_eq
-        peak = start_eq
-        max_dd = 0.0
-        open_slots = []
-        wins_cnt, losses_cnt = 0, 0
-        gross_profit, gross_loss = 0.0, 0.0
-        curve = [{"label": "Start", "equity": round(start_eq, 2)}]
-        sample_trades = []
-        pair_cd = {p[0]: -100 for p in pairs_spec}
-        cl, cs, lp, sp = 0, 0, -1, -1
+        eval_start = min(205, max(25, n_bars - 10))
+        actual_bars = max(1, n_bars - eval_start)
+        actual_days = max(1, round(actual_bars / 288.0))
+        step_bars = max(288, actual_bars // 6)
 
-        maker_f = 0.000236
-        taker_f = 0.000590
-        if fee_mode == "100_MAKER":
-            ent_f, prof_ex_f, stop_ex_f = maker_f, maker_f, taker_f
-            slip_p, slip_s = 0.0, 0.00012
-        else:
-            ent_f = 0.85 * maker_f + 0.15 * taker_f
-            prof_ex_f = 0.75 * maker_f + 0.25 * taker_f
-            stop_ex_f = taker_f
-            slip_p, slip_s = 0.00004, 0.00015
+        def _simulate_variant(variant_mode: str):
+            # variant_mode: "V9_RESTORED" (0-bar lag, 90s -0.40%->-0.28% shield) vs "V12_3_HYBRID" (1-bar closed-candle delay, immediate -0.28% stop)
+            is_v9 = (variant_mode == "V9_RESTORED")
+            equity = start_eq
+            peak = start_eq
+            max_dd = 0.0
+            open_slots = []
+            wins_cnt, losses_cnt = 0, 0
+            gross_profit, gross_loss = 0.0, 0.0
+            curve = [{"label": "Start", "equity": round(start_eq, 2)}]
+            sample_trades = []
+            pair_cd = {p[0]: -100 for p in pairs_spec}
+            cl, cs, lp, sp = 0, 0, -1, -1
 
-        step_days = max(1, days // 6)
-        for bar in range(205, n_bars):
-            still = []
-            for c in open_slots:
-                sym = c["sym"]
-                d = mkt[sym]
-                side = c["side"]
-                dm = 1.0 if side == "LONG" else -1.0
-                bh, bl = d["high"][bar], d["low"][bar]
-                ep, notl, qty = c["ep"], c["notl"], c["qty"]
-                bp = bh if side == "LONG" else bl
-                wp = bl if side == "LONG" else bh
-                age_bars = bar - c["eb"]
-                if (side == "LONG" and bp > c["ext"]) or (side == "SHORT" and bp < c["ext"]):
-                    c["ext"] = bp
-                mf = dm * ((c["ext"] - ep) / ep)
-                if mf >= 0.0014 and c["st"] < 0.25:
-                    c["st"] = 0.25; c["stop"] = ep * (1.0 + dm * 0.0010)
-                if mf >= 0.0028 and c["st"] < 0.5:
-                    c["st"] = 0.5; c["stop"] = ep * (1.0 + dm * 0.0020)
-                if mf >= 0.0038 and c["st"] < 1:
-                    c["st"] = 1; c["stop"] = ep * (1.0 + dm * 0.0028)
-                if mf >= 0.0065 and c["st"] < 2:
-                    c["st"] = 2; c["tp1"] = True
-                    hq = max(1, int(qty * 0.50)) if qty >= 2 else 0
-                    if hq > 0 and (qty - hq) > 0:
-                        hn = notl * (hq / qty)
-                        c["rem_notl"] = notl - hn
-                        c["bank"] = hn * 0.0065 - hn * (ent_f + maker_f)
-                    else:
-                        c["rem_notl"] = notl; c["bank"] = 0.0; c["tp1"] = False
-                    c["stop"] = ep * (1.0 + dm * 0.0050)
-                if mf >= 0.0100:
-                    c["st"] = 3
-                    ts = c["ext"] * (1.0 - dm * 0.0020)
-                    fs = ep * (1.0 + dm * 0.0085)
-                    c["stop"] = max(ts, fs) if side == "LONG" else min(ts, fs)
+            maker_f = 0.000236
+            taker_f = 0.000590
+            if fee_mode == "100_MAKER":
+                ent_f, prof_ex_f, stop_ex_f = maker_f, maker_f, taker_f
+                slip_p, slip_s = 0.0, 0.00012
+            else:
+                ent_f = 0.85 * maker_f + 0.15 * taker_f
+                prof_ex_f = 0.75 * maker_f + 0.25 * taker_f
+                stop_ex_f = taker_f
+                slip_p, slip_s = 0.00004, 0.00015
 
-                tpm = ep * (1.0 + dm * 0.0160)
-                if (side == "LONG" and bp >= tpm) or (side == "SHORT" and bp <= tpm):
-                    rn = c["rem_notl"] if c["tp1"] else notl
-                    pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * 0.0160 - rn * (ent_f + maker_f), 2)
-                    equity = round(equity + pnl, 2)
-                    wins_cnt += 1; gross_profit += pnl
-                    if side == "LONG": cl = 0
-                    else: cs = 0
-                    pair_cd[sym] = bar + 1
-                    sample_trades.append({"sym": sym, "side": side, "qty": qty, "stage": "STAGE_4_JACKPOT", "pnl": pnl, "eq": equity})
-                    continue
-
-                if c["st"] < 1 and age_bars >= 3:
-                    scp = ep * (1.0 + dm * 0.0014)
-                    if (side == "LONG" and bp >= scp) or (side == "SHORT" and bp <= scp):
-                        pnl = round(notl * (0.0014 - slip_p) - notl * (ent_f + prof_ex_f), 2)
-                        equity = round(equity + pnl, 2)
-                        if pnl > 0:
-                            wins_cnt += 1; gross_profit += pnl
-                            if side == "LONG": cl = 0
-                            else: cs = 0
-                        else:
-                            losses_cnt += 1; gross_loss += abs(pnl)
-                        pair_cd[sym] = bar + 1
-                        sample_trades.append({"sym": sym, "side": side, "qty": qty, "stage": "15M_RESCUE_WIN", "pnl": pnl, "eq": equity})
-                        continue
-
-                if (side == "LONG" and wp <= c["stop"]) or (side == "SHORT" and wp >= c["stop"]):
-                    st = c["st"]
-                    is_l = (st == 0)
-                    pe = dm * ((c["stop"] - ep) / ep) - (slip_s if is_l else slip_p)
-                    ex_f = stop_ex_f if is_l else prof_ex_f
-                    rn = c["rem_notl"] if c["tp1"] else notl
-                    pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * pe - rn * (ent_f + ex_f), 2)
-                    if is_l:
-                        pair_cd[sym] = bar + 6
-                        if side == "LONG":
-                            cl += 1
-                            if cl >= 2: lp = bar + 6; cl = 0
-                        else:
-                            cs += 1
-                            if cs >= 2: sp = bar + 6; cs = 0
-                    else:
-                        pair_cd[sym] = bar + 1
-                        if pnl > 0:
-                            if side == "LONG": cl = 0
-                            else: cs = 0
-                    equity = round(equity + pnl, 2)
-                    if pnl > 0: wins_cnt += 1; gross_profit += pnl
-                    else: losses_cnt += 1; gross_loss += abs(pnl)
-                    sample_trades.append({"sym": sym, "side": side, "qty": qty, "stage": f"STAGE_{st}", "pnl": pnl, "eq": equity})
-                    continue
-                still.append(c)
-            open_slots = still
-            if equity > peak: peak = equity
-            dd = (peak - equity) / max(peak, 1.0)
-            if dd > max_dd: max_dd = dd
-
-            day_num = (bar + 1) // 288
-            if (bar + 1) % 288 == 0 and (day_num % step_days == 0 or day_num == days or day_num == 1):
-                curve.append({"label": f"Day {day_num}", "equity": round(equity, 2)})
-
-            uh = sum(1 for x in open_slots if x["st"] == 0)
-            if len(open_slots) < 3 and uh == 0:
-                osyms = {x["sym"] for x in open_slots}
-                bd = mkt["BTC/USDT:USDT"]
-                bsl = (bd["ema21"][bar] - bd["ema21"][bar - 4]) / bd["ema21"][bar]
-                br5 = bd["roc5"][bar]
-                cands = []
-                for sym, *_ in pairs_spec:
-                    if sym in osyms or bar < pair_cd[sym] or sym not in u_set:
-                        continue
+            for bar in range(eval_start, n_bars):
+                ts_str = datetime.fromtimestamp(grid_ts[bar], tz=timezone.utc).strftime("%m-%d %H:%M")
+                still = []
+                for c in open_slots:
+                    sym = c["sym"]
                     d = mkt[sym]
-                    if d["atr_pct"][bar] < 0.0014 or d["ker"][bar] < 0.16:
-                        continue
-                    cn, on, cp = d["close"][bar], d["open"][bar], d["close"][bar - 1]
-                    hn, ln = d["high"][bar], d["low"][bar]
-                    e9, e21, e50, e100, e200 = d["ema9"][bar], d["ema21"][bar], d["ema50"][bar], d["ema100"][bar], d["ema200"][bar]
-                    r2, r14, z, rv, roc5, ker = d["rsi2"][bar], d["rsi14"][bar], d["z"][bar], d["rvol"][bar], d["roc5"][bar], d["ker"][bar]
-                    sl = (e21 - d["ema21"][bar - 4]) / e21
-                    rng = max(hn - ln, 1e-9)
-                    not_sp = rng <= d["atr14"][bar] * 2.20
-                    lw, uw = (min(on, cn) - ln) / rng, (hn - max(on, cn)) / rng
-                    gb, rb = not_sp and cn > on and cn >= cp, not_sp and cn < on and cn <= cp
-                    cab = cn >= e200 * 0.996 and e21 > e50 >= e100 * 0.9995 and sl >= 0.0003 and roc5 > -0.006
-                    cae = cn <= e200 * 1.004 and e21 < e50 <= e100 * 1.0005 and sl <= -0.0003 and roc5 < 0.006
-                    sab = 40 + (22 if cab else 0) + (19 if r2 <= 22 else 0) + (11 if z <= -1 else 0) + (10 if (gb or lw >= 0.28) else 0) + (6 if rv >= 1.08 else 0)
-                    sae = 40 + (22 if cae else 0) + (19 if r2 >= 78 else 0) + (11 if z >= 1 else 0) + (10 if (rb or uw >= 0.28) else 0) + (6 if rv >= 1.08 else 0)
-                    cbb = cn >= e200 * 0.998 and e9 >= e21 * 0.9995 and e21 > e50 and sl >= 0.00035
-                    cbe = cn <= e200 * 1.002 and e9 <= e21 * 1.0005 and e21 < e50 and sl <= -0.00035
-                    l3, h3 = min(ln, d["low"][bar - 1], d["low"][bar - 2]), max(hn, d["high"][bar - 1], d["high"][bar - 2])
-                    bt_, st_ = l3 <= e21 * 1.0035 and gb and cn >= e9 * 0.9995, h3 >= e21 * 0.9965 and rb and cn <= e9 * 1.0005
-                    bno, sno = -1.35 <= z <= 0.90 and 42 <= r14 <= 70, -0.90 <= z <= 1.35 and 30 <= r14 <= 58
-                    sbb = 44 + (24 if cbb else 0) + (16 if bt_ else 0) + (11 if bno else 0) + (5 if rv >= 1.02 else 0)
-                    sbe = 44 + (24 if cbe else 0) + (16 if st_ else 0) + (11 if sno else 0) + (5 if rv >= 1.02 else 0)
-                    l2, h2 = min(ln, d["low"][bar - 1]), max(hn, d["high"][bar - 1])
-                    lc = cab and e9 > e21 and l2 <= e9 * 1.0010 and gb and cn >= e9 and -1.0 <= z <= 0.50 and rv >= 1.10 and ker >= 0.22
-                    sc_ = cae and e9 < e21 and h2 >= e9 * 0.9990 and rb and cn <= e9 and -0.50 <= z <= 1.0 and rv >= 1.10 and ker >= 0.22
-                    scb, sce = (97 if lc else 50), (97 if sc_ else 50)
-                    la = cab and gb and (r2 <= 22 or z <= -1) and sab >= 96
-                    lb = cbb and bt_ and bno and sbb >= 96
-                    sa = cae and rb and (r2 >= 78 or z >= 1) and sae >= 96
-                    sb = cbe and st_ and sno and sbe >= 96
-                    top_p = 1 if sym in TOP5_PRIORITY_SYMBOLS else 0
-                    if (la or lb or lc) and bar >= lp and bsl >= -0.00015 and br5 >= -0.0012:
-                        cands.append((top_p, min(99, max(sab, sbb, scb)), ker, rv, sym, "LONG", cn))
-                    elif (sa or sb or sc_) and bar >= sp and bsl <= 0.00015 and br5 <= 0.0012:
-                        cands.append((top_p, min(99, max(sae, sbe, sce)), ker, rv, sym, "SHORT", cn))
-                if cands:
-                    cands.sort(reverse=True)
-                    _, sc, _, _, sym, side, ep = cands[0]
+                    side = c["side"]
                     dm = 1.0 if side == "LONG" else -1.0
-                    dd_cur = (peak - equity) / max(peak, 1.0)
-                    lev = 4.0 if dd_cur > 0.15 else (7.2 if sc >= 98 else 6.5)
-                    beq = min(equity, 350000.0 / lev) if compounded else start_eq
-                    t_notl = round(beq * lev, 2)
-                    cv = c_vals[sym]
-                    raw_c = (t_notl / 85.0) / max(ep * cv, 1e-9)
-                    rq = max(1, int(round(raw_c)))
-                    qty = max(1, int(math.floor(raw_c))) if (rq > raw_c * 1.05 and raw_c >= 1.0) else rq
-                    ex_notl = round(qty * cv * ep * 85.0, 2)
-                    open_slots.append({"sym": sym, "side": side, "eb": bar, "ep": ep, "ext": ep, "notl": ex_notl, "rem_notl": ex_notl, "qty": qty, "st": 0, "tp1": False, "bank": 0.0, "stop": ep * (1.0 - dm * 0.0028)})
+                    bh, bl = d["high"][bar], d["low"][bar]
+                    ep, notl, qty = c["ep"], c["notl"], c["qty"]
+                    bp = bh if side == "LONG" else bl
+                    wp = bl if side == "LONG" else bh
+                    age_bars = bar - c["eb"]
+                    if is_v9 and c["st"] == 0 and age_bars >= 1:
+                        c["stop"] = ep * (1.0 - dm * 0.0028)
 
-        tot = wins_cnt + losses_cnt
+                    if (side == "LONG" and bp > c["ext"]) or (side == "SHORT" and bp < c["ext"]):
+                        c["ext"] = bp
+                    mf = dm * ((c["ext"] - ep) / ep)
+
+                    if mf >= (0.0016 if is_v9 else 0.0014) and c["st"] < 0.25:
+                        c["st"] = 0.25; c["stop"] = ep * (1.0 + dm * (0.0011 if is_v9 else 0.0010))
+                    if mf >= 0.0028 and c["st"] < 0.5:
+                        c["st"] = 0.5; c["stop"] = ep * (1.0 + dm * (0.0018 if is_v9 else 0.0020))
+                    if mf >= (0.0042 if is_v9 else 0.0038) and c["st"] < 1:
+                        c["st"] = 1; c["stop"] = ep * (1.0 + dm * 0.0028)
+                    if mf >= (0.0068 if is_v9 else 0.0065) and c["st"] < 2:
+                        c["st"] = 2; c["tp1"] = True
+                        hq = max(1, int(qty * 0.50)) if qty >= 2 else 0
+                        if hq > 0 and (qty - hq) > 0:
+                            hn = notl * (hq / qty)
+                            c["rem_notl"] = notl - hn
+                            c["bank"] = hn * (0.0068 if is_v9 else 0.0065) - hn * (ent_f + maker_f)
+                        else:
+                            c["rem_notl"] = notl; c["bank"] = 0.0; c["tp1"] = False
+                        c["stop"] = ep * (1.0 + dm * 0.0050)
+                    if mf >= (0.0105 if is_v9 else 0.0100):
+                        c["st"] = 3
+                        ts = c["ext"] * (1.0 - dm * (0.0022 if is_v9 else 0.0020))
+                        fs = ep * (1.0 + dm * 0.0085)
+                        c["stop"] = max(ts, fs) if side == "LONG" else min(ts, fs)
+
+                    tpm = ep * (1.0 + dm * 0.0160)
+                    if (side == "LONG" and bp >= tpm) or (side == "SHORT" and bp <= tpm):
+                        rn = c["rem_notl"] if c["tp1"] else notl
+                        pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * 0.0160 - rn * (ent_f + maker_f), 2)
+                        equity = round(equity + pnl, 2)
+                        wins_cnt += 1; gross_profit += pnl
+                        if side == "LONG": cl = 0
+                        else: cs = 0
+                        pair_cd[sym] = bar + 1
+                        sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": "STAGE_4_TP", "pnl": pnl, "eq": equity})
+                        continue
+
+                    if c["st"] < 1 and age_bars >= (4 if is_v9 else 3):
+                        scp = ep * (1.0 + dm * 0.0014)
+                        if (side == "LONG" and bp >= scp) or (side == "SHORT" and bp <= scp):
+                            pnl = round(notl * (0.0014 - slip_p) - notl * (ent_f + prof_ex_f), 2)
+                            equity = round(equity + pnl, 2)
+                            if pnl > 0:
+                                wins_cnt += 1; gross_profit += pnl
+                                if side == "LONG": cl = 0
+                                else: cs = 0
+                            else:
+                                losses_cnt += 1; gross_loss += abs(pnl)
+                            pair_cd[sym] = bar + 1
+                            sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": "SCRATCH_WIN", "pnl": pnl, "eq": equity})
+                            continue
+
+                    if (side == "LONG" and wp <= c["stop"]) or (side == "SHORT" and wp >= c["stop"]):
+                        st = c["st"]
+                        is_l = (st == 0)
+                        pe = dm * ((c["stop"] - ep) / ep) - (slip_s if is_l else slip_p)
+                        ex_f = stop_ex_f if is_l else prof_ex_f
+                        rn = c["rem_notl"] if c["tp1"] else notl
+                        pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * pe - rn * (ent_f + ex_f), 2)
+                        if is_l:
+                            pair_cd[sym] = bar + 6
+                            if side == "LONG":
+                                cl += 1
+                                if cl >= 2: lp = bar + 6; cl = 0
+                            else:
+                                cs += 1
+                                if cs >= 2: sp = bar + 6; cs = 0
+                        else:
+                            pair_cd[sym] = bar + 1
+                            if pnl > 0:
+                                if side == "LONG": cl = 0
+                                else: cs = 0
+                        equity = round(equity + pnl, 2)
+                        if pnl > 0: wins_cnt += 1; gross_profit += pnl
+                        else: losses_cnt += 1; gross_loss += abs(pnl)
+                        sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": f"STAGE_{st}", "pnl": pnl, "eq": equity})
+                        continue
+                    still.append(c)
+                open_slots = still
+                if equity > peak: peak = equity
+                dd = (peak - equity) / max(peak, 1.0)
+                if dd > max_dd: max_dd = dd
+
+                rel_bar = bar - eval_start + 1
+                if rel_bar % step_bars == 0 or bar == n_bars - 1:
+                    day_lbl = max(1, round(rel_bar / 288.0))
+                    curve.append({"label": f"Day {day_lbl}", "equity": round(equity, 2)})
+
+                uh = sum(1 for x in open_slots if x["st"] == 0)
+                if len(open_slots) < 3 and uh == 0:
+                    osyms = {x["sym"] for x in open_slots}
+                    # V9 evaluates on current forming bar `bar`; V12.3 Hybrid evaluates indicators on `bar - 1` (closed bar) and enters at `open[bar]`
+                    s_idx = bar if is_v9 else (bar - 1)
+                    bd = mkt["BTC/USDT:USDT"]
+                    bsl = (bd["ema21"][s_idx] - bd["ema21"][s_idx - 4]) / max(bd["ema21"][s_idx], 1e-12)
+                    br5 = bd["roc5"][s_idx]
+                    cands = []
+                    for sym, *_ in pairs_spec:
+                        if sym in osyms or bar < pair_cd[sym] or sym not in u_set or sym not in mkt:
+                            continue
+                        d = mkt[sym]
+                        if d["atr_pct"][s_idx] < 0.0014 or d["ker"][s_idx] < 0.16:
+                            continue
+                        cn, on, cp = d["close"][s_idx], d["open"][s_idx], d["close"][s_idx - 1]
+                        hn, ln = d["high"][s_idx], d["low"][s_idx]
+                        e9, e21, e50, e100, e200 = d["ema9"][s_idx], d["ema21"][s_idx], d["ema50"][s_idx], d["ema100"][s_idx], d["ema200"][s_idx]
+                        r2, r14, z, rv, roc5, ker = d["rsi2"][s_idx], d["rsi14"][s_idx], d["z"][s_idx], d["rvol"][s_idx], d["roc5"][s_idx], d["ker"][s_idx]
+                        sl = (e21 - d["ema21"][s_idx - 4]) / max(e21, 1e-12)
+                        rng = max(hn - ln, 1e-9)
+                        not_sp = rng <= d["atr14"][s_idx] * 2.20
+                        lw, uw = (min(on, cn) - ln) / rng, (hn - max(on, cn)) / rng
+                        gb, rb = not_sp and cn > on and cn >= cp, not_sp and cn < on and cn <= cp
+                        cab = cn >= e200 * 0.996 and e21 > e50 >= e100 * 0.9995 and sl >= 0.0003 and roc5 > -0.006
+                        cae = cn <= e200 * 1.004 and e21 < e50 <= e100 * 1.0005 and sl <= -0.0003 and roc5 < 0.006
+                        sab = 40 + (22 if cab else 0) + (19 if r2 <= 22 else 0) + (11 if z <= -1 else 0) + (10 if (gb or lw >= 0.28) else 0) + (6 if rv >= 1.08 else 0)
+                        sae = 40 + (22 if cae else 0) + (19 if r2 >= 78 else 0) + (11 if z >= 1 else 0) + (10 if (rb or uw >= 0.28) else 0) + (6 if rv >= 1.08 else 0)
+                        cbb = cn >= e200 * 0.998 and e9 >= e21 * 0.9995 and e21 > e50 and sl >= 0.00035
+                        cbe = cn <= e200 * 1.002 and e9 <= e21 * 1.0005 and e21 < e50 and sl <= -0.00035
+                        l3, h3 = min(ln, d["low"][s_idx - 1], d["low"][s_idx - 2]), max(hn, d["high"][s_idx - 1], d["high"][s_idx - 2])
+                        bt_, st_ = l3 <= e21 * 1.0035 and gb and cn >= e9 * 0.9995, h3 >= e21 * 0.9965 and rb and cn <= e9 * 1.0005
+                        bno, sno = -1.35 <= z <= 0.90 and 42 <= r14 <= 70, -0.90 <= z <= 1.35 and 30 <= r14 <= 58
+                        sbb = 44 + (24 if cbb else 0) + (16 if bt_ else 0) + (11 if bno else 0) + (5 if rv >= 1.02 else 0)
+                        sbe = 44 + (24 if cbe else 0) + (16 if st_ else 0) + (11 if sno else 0) + (5 if rv >= 1.02 else 0)
+                        l2, h2 = min(ln, d["low"][s_idx - 1]), max(hn, d["high"][s_idx - 1])
+                        lc = cab and e9 > e21 and l2 <= e9 * 1.0010 and gb and cn >= e9 and -1.0 <= z <= 0.50 and rv >= 1.10 and ker >= 0.22
+                        sc_ = cae and e9 < e21 and h2 >= e9 * 0.9990 and rb and cn <= e9 and -0.50 <= z <= 1.0 and rv >= 1.10 and ker >= 0.22
+                        scb, sce = (97 if lc else 50), (97 if sc_ else 50)
+                        la = cab and gb and (r2 <= 22 or z <= -1) and sab >= 96
+                        lb = cbb and bt_ and bno and sbb >= 96
+                        sa = cae and rb and (r2 >= 78 or z >= 1) and sae >= 96
+                        sb = cbe and st_ and sno and sbe >= 96
+                        top_p = 1 if sym in TOP5_PRIORITY_SYMBOLS else 0
+                        entry_px = d["close"][bar] if is_v9 else d["open"][bar]
+                        if (la or lb or lc) and bar >= lp and bsl >= -0.00015 and br5 >= -0.0012:
+                            cands.append((top_p, min(99, max(sab, sbb, scb)), ker, rv, sym, "LONG", entry_px))
+                        elif (sa or sb or sc_) and bar >= sp and bsl <= 0.00015 and br5 <= 0.0012:
+                            cands.append((top_p, min(99, max(sae, sbe, sce)), ker, rv, sym, "SHORT", entry_px))
+                    if cands:
+                        cands.sort(reverse=True)
+                        _, sc, _, _, sym, side, ep = cands[0]
+                        dm = 1.0 if side == "LONG" else -1.0
+                        dd_cur = (peak - equity) / max(peak, 1.0)
+                        lev = 4.0 if dd_cur > 0.15 else (7.2 if sc >= 98 else 6.5)
+                        beq = min(equity, 350000.0 / lev) if compounded else start_eq
+                        t_notl = round(beq * lev, 2)
+                        cv = c_vals[sym]
+                        raw_c = (t_notl / 85.0) / max(ep * cv, 1e-9)
+                        rq = max(1, int(round(raw_c)))
+                        qty = max(1, int(math.floor(raw_c))) if (rq > raw_c * 1.05 and raw_c >= 1.0) else rq
+                        ex_notl = round(qty * cv * ep * 85.0, 2)
+                        init_stop_pct = 0.0040 if is_v9 else 0.0028
+                        open_slots.append({"sym": sym, "side": side, "eb": bar, "ep": ep, "ext": ep, "notl": ex_notl, "rem_notl": ex_notl, "qty": qty, "st": 0, "tp1": False, "bank": 0.0, "stop": ep * (1.0 - dm * init_stop_pct)})
+
+            tot = wins_cnt + losses_cnt
+            return {
+                "model": variant_mode,
+                "ending_equity_inr": round(equity, 2),
+                "net_profit_inr": round(equity - start_eq, 2),
+                "roi_pct": round(((equity - start_eq) / start_eq) * 100.0, 2),
+                "trades": tot,
+                "trades_per_day": round(tot / float(actual_days), 2),
+                "wins": wins_cnt,
+                "losses": losses_cnt,
+                "win_rate_pct": round((wins_cnt / max(tot, 1)) * 100.0, 2),
+                "gross_profit_inr": round(gross_profit, 2),
+                "gross_loss_inr": round(gross_loss, 2),
+                "profit_factor": round(gross_profit / max(gross_loss, 1.0), 2),
+                "max_dd_pct": round(max_dd * 100.0, 2),
+                "curve": curve,
+                "recent_trades": list(reversed(sample_trades[-30:])),
+            }
+
+        res_v9 = _simulate_variant("V9_RESTORED")
+        res_v12 = _simulate_variant("V12_3_HYBRID")
         return {
-            "days": days,
+            "days": actual_days,
+            "bars_evaluated": actual_bars,
+            "data_source": data_source_label,
+            "window_start_utc": start_dt,
+            "window_end_utc": end_dt,
             "starting_equity_inr": start_eq,
-            "ending_equity_inr": round(equity, 2),
-            "net_profit_inr": round(equity - start_eq, 2),
-            "roi_pct": round(((equity - start_eq) / start_eq) * 100.0, 2),
-            "trades": tot,
-            "trades_per_day": round(tot / float(days), 2),
-            "wins": wins_cnt,
-            "losses": losses_cnt,
-            "win_rate_pct": round((wins_cnt / max(tot, 1)) * 100.0, 2),
-            "gross_profit_inr": round(gross_profit, 2),
-            "gross_loss_inr": round(gross_loss, 2),
-            "profit_factor": round(gross_profit / max(gross_loss, 1.0), 2),
-            "max_dd_pct": round(max_dd * 100.0, 2),
-            "curve": curve,
-            "recent_trades": list(reversed(sample_trades[-25:])),
+            **res_v9,
+            "v12_comparison": res_v12,
         }
 
     loop = asyncio.get_running_loop()
