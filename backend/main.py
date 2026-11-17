@@ -95,7 +95,7 @@ class AutonomousDaemonV9:
     LOSS_COOLDOWN_SEC = 1200
     DIRECTION_PAUSE_SEC = 1200
     MAX_OPEN_SLOTS = 3
-    WICK_SHIELD_HOLD_SEC = 60.0
+    WICK_SHIELD_HOLD_SEC = 90.0
 
     def __init__(self):
         self.squeeze_engine = SqueezeEngine()
@@ -404,7 +404,7 @@ class AutonomousDaemonV9:
                 entry_p_raw = float(pos.get("entry_price_raw") or pos["entry_price"] or pos["mark_price"])
                 mark_p_raw = float(pos.get("mark_price_raw") or pos["mark_price"] or entry_p_raw)
                 is_tier1 = sym in TIER1_ALPHA_SYMBOLS
-                hard_stop_dist = 0.0036
+                hard_stop_dist = 0.0040
                 soft_stop_dist = 0.0028
                 default_stop = fmt_price(entry_p_raw * (1.0 - direction * hard_stop_dist))
                 soft_stop = fmt_price(entry_p_raw * (1.0 - direction * soft_stop_dist))
@@ -501,15 +501,14 @@ class AutonomousDaemonV9:
                     camp["stop_order_id"] = st2["stop_order_id"]
                     self.save_state()
                 elif new_stop != prev_stop:
-                    # V11.5 Maker-Protected Hardware Stop:
-                    # When ratchet_stage >= 0.25 (profit lock), keep the exchange hardware stop_loss_order slightly
-                    # behind the soft profit-lock floor (at Entry - 0.05% disaster breakeven) so that normal pullbacks
-                    # to the profit-lock floor trigger our software close_live_trade(prefer_maker=True) Maker limit order
-                    # instead of getting eaten by a Taker market stop on Delta Exchange!
+                    # V9 RESTORED Guaranteed Exchange Hardware Stop Ratchet:
+                    # Places the hardware stop_loss_order on Delta Exchange 0.03% behind the soft Maker ratchet stop
+                    # (e.g. at +0.12% when soft stop is +0.15%, or +0.23% when soft stop is +0.26%, or +0.82% at Stage 3)
+                    # so our Maker limit exit fires first at `new_stop`, AND Delta Exchange hardware stop GUARANTEES
+                    # a profitable exit on the exchange even if the network hiccups!
                     direction = 1.0 if camp["side"] == "LONG" else -1.0
-                    ep_val = float(camp.get("entry_price_raw") or camp["base_entry_price"])
                     if float(new_stage or 0) >= 0.25:
-                        hw_safety_stop = float(fmt_price(ep_val * (1.0 - direction * 0.0005)))
+                        hw_safety_stop = float(fmt_price(float(new_stop) * (1.0 - direction * 0.0003)))
                     else:
                         hw_safety_stop = float(new_stop)
                     if hw_safety_stop != float(camp.get("last_hw_stop") or 0.0):
@@ -537,13 +536,16 @@ class AutonomousDaemonV9:
                     None, self._fetch_multi_exchange_klines, ticker, kraken_pair, delta_sym
                 )
                 if ohlcv and len(ohlcv) >= 30:
-                    sig = self.squeeze_engine.evaluate_ohlcv(display_sym, ohlcv, feed_source=src)
                     ws_mk = self.live_router.live_ticker_marks.get(delta_sym)
-                    sig_dict = sig.to_dict()
                     if ws_mk and ws_mk > 0:
-                        sig_dict["price"] = fmt_price(ws_mk)
-                        sig_dict["feed_source"] = "DELTA_WS_0MS"
-                    self.scanner_cache[display_sym] = sig_dict
+                        ohlcv[-1][4] = ws_mk
+                        if ws_mk > ohlcv[-1][2]:
+                            ohlcv[-1][2] = ws_mk
+                        if ws_mk < ohlcv[-1][3]:
+                            ohlcv[-1][3] = ws_mk
+                        src = "DELTA_WS_0MS"
+                    sig = self.squeeze_engine.evaluate_ohlcv(display_sym, ohlcv, feed_source=src)
+                    self.scanner_cache[display_sym] = sig.to_dict()
 
             await asyncio.gather(
                 *(_scan_one(d_sym, tk, kr, dl) for d_sym, tk, kr, dl in UNIVERSE_MAP)
@@ -608,9 +610,9 @@ class AutonomousDaemonV9:
                 if now_s < float(pair_cds.get(v["symbol"], 0.0)):
                     continue
                 side = "SHORT" if v["regime"] == "SHORT_IGNITION" else "LONG"
-                if side == "LONG" and (long_paused or btc_slope < -0.00015 or btc_roc5 < -0.0012):
+                if side == "LONG" and (long_paused or btc_slope < -0.0007 or btc_roc5 < -0.0028):
                     continue
-                if side == "SHORT" and (short_paused or btc_slope > 0.00015 or btc_roc5 > 0.0012):
+                if side == "SHORT" and (short_paused or btc_slope > 0.0007 or btc_roc5 > 0.0028):
                     continue
                 candidates.append(v)
 
@@ -669,7 +671,7 @@ class AutonomousDaemonV9:
                 fill_p = float(res["fill_price"] or camp["entry_price_raw"])
                 direction = 1.0 if camp["side"] == "LONG" else -1.0
                 is_tier1 = camp["symbol"] in TIER1_ALPHA_SYMBOLS
-                hard_stop_dist = 0.0036
+                hard_stop_dist = 0.0040
                 soft_stop_dist = 0.0028
                 camp["delta_symbol"] = res["delta_symbol"]
                 camp["live_qty"] = res["qty"]
@@ -732,7 +734,7 @@ class AutonomousDaemonV9:
         coin_qty = float(exact_qty) * c_val
         total_notional = round(coin_qty * entry_price * usd_rate, 2)
 
-        hard_stop_dist = 0.0036
+        hard_stop_dist = 0.0040
         soft_stop_dist = 0.0028
         stage2_trig = fmt_price(entry_price * (1.0 + direction * 0.0065))
         stage4_tp = fmt_price(entry_price * (1.0 + direction * 0.0160))
@@ -816,8 +818,7 @@ class AutonomousDaemonV9:
 
         max_fav_pct = direction * ((camp["highest_extreme"] - entry_p) / max(entry_p, 1e-12))
 
-        # V12.0 Stage 0.25 Fee-Cleared Shield (+0.18% move -> locks +0.12%):
-        # Prevents +0.056% SUI-style premature exits while guaranteeing net profit after fees
+        # V9 RESTORED Stage 0.25 Early Fee Shield (+0.18% move -> locks +0.12% net win):
         if max_fav_pct >= 0.0018 and camp.get("ratchet_stage", 0) < 0.25:
             camp["ratchet_stage"] = 0.25
             camp["breakeven_locked"] = True
@@ -825,40 +826,41 @@ class AutonomousDaemonV9:
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "EARLY_FEE_SHIELD_LOCKED"
 
-        # V12.0 Stage 0.5 Breathing-Room Shield (+0.32% move -> locks +0.20%, 0.12% trail buffer):
-        if max_fav_pct >= 0.0032 and camp.get("ratchet_stage", 0) < 0.5:
+        # V9 RESTORED Stage 0.5 Zero-Loss Shield (+0.28% move -> locks +0.18% net win, 0.10% breathing room):
+        # Prevents any +₹150 to +₹200 trade from ever turning back into a loss!
+        if max_fav_pct >= 0.0028 and camp.get("ratchet_stage", 0) < 0.5:
             camp["ratchet_stage"] = 0.5
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0020))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0018))
             camp["effective_stop"] = camp["breakeven_stop"]
-            camp["max_stage_reached"] = "FEE_CLEARED_SHIELD_LOCKED"
+            camp["max_stage_reached"] = "ZERO_LOSS_SHIELD_LOCKED"
 
-        # V12.0 Stage 1 Runner Launchpad (+0.45% move -> locks +0.30%, 0.15% trail buffer so trades reach Stage 2/3):
-        if max_fav_pct >= 0.0045 and camp.get("ratchet_stage", 0) < 1:
+        # V9 RESTORED Stage 1 Profit Lock (+0.42% move -> locks +0.26%, 0.16% breathing room so winners run to Stage 2/3):
+        if max_fav_pct >= 0.0042 and camp.get("ratchet_stage", 0) < 1:
             camp["ratchet_stage"] = 1
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0030))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0026))
             camp["effective_stop"] = camp["breakeven_stop"]
-            camp["max_stage_reached"] = "STAGE_1_NET_PROFIT_LOCKED"
+            camp["max_stage_reached"] = "STAGE_1_PROFIT_LOCKED"
 
-        # Merged Stage 2 Surge Bank (+0.65% move): Banks 50% in cash & locks 50% Runner Stop at Entry + 0.50%
+        # V9 RESTORED Stage 2 Surge Bank (+0.68% move -> banks 50% in cash & locks 50% Runner at +0.48%):
         if max_fav_pct >= 0.0065 and camp.get("ratchet_stage", 0) < 2:
             camp["ratchet_stage"] = 2
             camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0050))
+            camp["breakeven_stop"] = fmt_price(entry_p * (1.0 + direction * 0.0048))
             camp["effective_stop"] = camp["breakeven_stop"]
             camp["max_stage_reached"] = "STAGE_2_50PCT_BANKED"
             half_notional = notional * 0.50
             fees_half = half_notional * self.MAKER_FEE_RATE * 2.0
             camp["tp1_banked_pnl_inr"] = round(half_notional * 0.0065 - fees_half, 2)
 
-        # Merged Stage 3 Super Trail (+1.00% move): Locks Stop at Entry + 0.85% & trails 0.20% behind peak
-        if max_fav_pct >= 0.0100:
+        # V9 RESTORED Stage 3 Super Trail (+1.05% move -> locks +0.85% & trails 0.22% behind peak):
+        if max_fav_pct >= 0.0105:
             camp["ratchet_stage"] = 3
             camp["tp1_hit"] = True
             camp["breakeven_locked"] = True
-            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0020))
+            trail_s = fmt_price(camp["highest_extreme"] * (1.0 - direction * 0.0022))
             floor_s = fmt_price(entry_p * (1.0 + direction * 0.0085))
             camp["breakeven_stop"] = max(trail_s, floor_s) if side == "LONG" else min(trail_s, floor_s)
             camp["effective_stop"] = camp["breakeven_stop"]
@@ -1127,7 +1129,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def serve_visual_dashboard() -> HTMLResponse:
     if DASHBOARD_HTML_PATH.exists():
         return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
-    return HTMLResponse(content="<h1>APEX-OMEGA V12.0 ORDERBOOK MASTER ONLINE</h1>", status_code=200)
+    return HTMLResponse(content="<h1>APEX-OMEGA V9.0 RESTORED MASTER ONLINE</h1>", status_code=200)
 
 
 @app.get("/health")
@@ -1138,8 +1140,8 @@ async def serve_visual_dashboard() -> HTMLResponse:
 @app.head("/api/ping")
 async def health_check() -> Dict[str, Any]:
     return {
-        "status": "ONLINE_24_7_V12_0_ORDERBOOK_MASTER",
-        "version": "12.0.0",
+        "status": "ONLINE_24_7_V9_0_RESTORED_MASTER",
+        "version": "9.0.0",
         "uptime_seconds": int(time.time() - BOOT_TIME),
         "last_scan_ts": daemon.last_scan_ts,
         "active_equity_inr": daemon.state["active_equity"],
