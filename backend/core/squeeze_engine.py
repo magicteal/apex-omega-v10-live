@@ -188,6 +188,8 @@ class SqueezeEngine:
 
         prev_idx = max(0, len(ema21) - 5)
         ema_slope = round((float(ema21[-1]) - float(ema21[prev_idx])) / max(float(ema21[-1]), 1e-9), 5)
+        prev50_idx = max(0, len(ema50) - 7)
+        ema50_slope = round((float(ema50[-1]) - float(ema50[prev50_idx])) / max(float(ema50[-1]), 1e-9), 5)
 
         vol_baseline = float(np.mean(vol[-21:-1])) if len(vol) > 21 else float(np.mean(vol))
         cur_vol = max(float(vol[-1]), float(vol[-2]) if len(vol) > 1 else 0.0)
@@ -296,9 +298,11 @@ class SqueezeEngine:
         bull_score = max(score_a_bull, score_b_bull, score_c_bull)
         bear_score = max(score_a_bear, score_b_bear, score_c_bear)
 
-        long_a_ok = core_a_bull_trend and green_bounce and (rsi2 <= 22 or z_score <= -1.00) and score_a_bull >= 96
+        dip_abs_long = core_a_bull_trend and not_parabolic_spike and (rsi2 <= 18.0 or z_score <= -1.15) and sig_close <= float(ema21[-1]) * 1.0020 and (green_bounce or lower_wick >= 0.30)
+        dip_abs_short = core_a_bear_trend and not_parabolic_spike and (rsi2 >= 82.0 or z_score >= 1.15) and sig_close >= float(ema21[-1]) * 0.9980 and (red_bounce or upper_wick >= 0.30)
+        long_a_ok = (core_a_bull_trend and green_bounce and (rsi2 <= 22 or z_score <= -1.00) and score_a_bull >= 96) or dip_abs_long
         long_b_ok = core_b_bull_stack and bull_pullback_touch and bull_not_overext and score_b_bull >= 96
-        short_a_ok = core_a_bear_trend and red_bounce and (rsi2 >= 78 or z_score >= 1.00) and score_a_bear >= 96
+        short_a_ok = (core_a_bear_trend and red_bounce and (rsi2 >= 78 or z_score >= 1.00) and score_a_bear >= 96) or dip_abs_short
         short_b_ok = core_b_bear_stack and bear_pullback_touch and bear_not_overext and score_b_bear >= 96
 
         if (long_a_ok or long_b_ok or core_c_bull_ok) and live_long_guard:
