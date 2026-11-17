@@ -318,6 +318,7 @@
             <td class="py-1.5 pr-2">${item.is_champion ? '&#9733; ' : ''}${item.model} ${item.is_champion ? '<span class="ml-1 px-1.5 py-0.5 text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded-sm">AUTO-ACTIVATED WINNER</span>' : ''}</td>
             <td class="py-1.5 pr-2">${item.trades} (${item.trades_per_day}/d)</td>
             <td class="py-1.5 pr-2 font-bold text-cyan-300">${item.win_rate_pct}%</td>
+            <td class="py-1.5 pr-2 text-emerald-300">+₹${Number(item.avg_win_inr || 0).toLocaleString('en-IN')} / <span class="text-rose-300">-₹${Number(item.avg_loss_inr || 0).toLocaleString('en-IN')}</span></td>
             <td class="py-1.5 pr-2 text-amber-300">${item.profit_factor}</td>
             <td class="py-1.5 pr-2 text-rose-300">${item.max_dd_pct}%</td>
             <td class="py-1.5 pr-2 font-bold ${item.roi_pct>=0?'text-emerald-400':'text-rose-400'}">₹${Number(item.ending_equity_inr).toLocaleString('en-IN')}</td>
@@ -327,11 +328,11 @@
         const cmpHtml = lb.length ? `
           <div class="mb-3 overflow-x-auto border border-[#243B30] rounded-sm bg-[#0B110E] p-3">
             <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-              <div class="text-[11px] font-bold text-amber-300 uppercase">6-Model Real-Candle Championship Tournament (${r.days}D | ${r.data_source})</div>
+              <div class="text-[11px] font-bold text-amber-300 uppercase">24-Model Real-Candle Auto-Optimizer — Top 6 Winners (${r.days}D | ${r.data_source})</div>
               <div class="text-[11px] text-emerald-300 font-bold">Active Live Winner: ${r.champion_model_name || r.model}</div>
             </div>
             <table class="w-full text-left text-[11px]">
-              <thead><tr class="text-slate-400 border-b border-[#1D3027]"><th class="py-1 pr-2">Strategy Architecture</th><th class="py-1 pr-2">Trades</th><th class="py-1 pr-2">Win Rate</th><th class="py-1 pr-2">Profit Factor</th><th class="py-1 pr-2">Max DD</th><th class="py-1 pr-2">Ending Equity</th><th class="py-1">Net ROI</th></tr></thead>
+              <thead><tr class="text-slate-400 border-b border-[#1D3027]"><th class="py-1 pr-2">Strategy Architecture &amp; R:R Profile</th><th class="py-1 pr-2">Trades</th><th class="py-1 pr-2">Win Rate</th><th class="py-1 pr-2">Avg Win / Avg Loss</th><th class="py-1 pr-2">Profit Factor</th><th class="py-1 pr-2">Max DD</th><th class="py-1 pr-2">Ending Equity</th><th class="py-1">Net ROI</th></tr></thead>
               <tbody>${rowsHtml}</tbody>
             </table>
           </div>` : '';
@@ -342,8 +343,8 @@
           <div class="grid grid-cols-2 sm:grid-cols-6 gap-2.5 mb-3">
             <div class="p-2.5 bg-[#101815] rounded-sm border border-[#243B30]"><div class="text-[10px] text-slate-400">CHAMPION TRADES (${r.days}D)</div><div class="text-sm font-bold text-white">${r.trades} (${r.trades_per_day}/d)</div></div>
             <div class="p-2.5 bg-[#101815] rounded-sm border border-[#243B30]"><div class="text-[10px] text-slate-400">CHAMPION WIN RATE</div><div class="text-sm font-bold text-cyan-300">${r.win_rate_pct}% (${r.wins}W/${r.losses}L)</div></div>
+            <div class="p-2.5 bg-[#101815] rounded-sm border border-[#243B30]"><div class="text-[10px] text-slate-400">AVG WIN / AVG LOSS</div><div class="text-sm font-bold text-emerald-300">+₹${Number(r.avg_win_inr || 0).toLocaleString('en-IN')} / <span class="text-rose-300">-₹${Number(r.avg_loss_inr || 0).toLocaleString('en-IN')}</span></div></div>
             <div class="p-2.5 bg-[#101815] rounded-sm border border-[#243B30]"><div class="text-[10px] text-slate-400">PROFIT FACTOR</div><div class="text-sm font-bold text-amber-300">${r.profit_factor}</div></div>
-            <div class="p-2.5 bg-[#101815] rounded-sm border border-[#243B30]"><div class="text-[10px] text-slate-400">MAX DRAWDOWN</div><div class="text-sm font-bold text-rose-300">${r.max_dd_pct}%</div></div>
             <div class="p-2.5 bg-[#101815] rounded-sm border border-[#243B30]"><div class="text-[10px] text-slate-400">NET PROFIT</div><div class="text-sm font-bold ${r.net_profit_inr>=0?'text-emerald-400':'text-rose-400'}">${r.net_profit_inr>=0?'+':''}₹${Number(r.net_profit_inr).toLocaleString('en-IN')}</div></div>
             <div class="p-2.5 bg-[#101815] rounded-sm border border-emerald-500/50"><div class="text-[10px] text-slate-400">ENDING EQUITY</div><div class="text-sm font-bold text-emerald-300">₹${Number(r.ending_equity_inr).toLocaleString('en-IN')} (${r.roi_pct>=0?'+':''}${r.roi_pct}%)</div></div>
           </div>

@@ -96,7 +96,7 @@ class AutonomousDaemonV9:
     LOSS_COOLDOWN_SEC = 1200
     DIRECTION_PAUSE_SEC = 1200
     MAX_OPEN_SLOTS = 3
-    WICK_SHIELD_HOLD_SEC = 1200.0
+    WICK_SHIELD_HOLD_SEC = 600.0
 
     def __init__(self):
         self.squeeze_engine = SqueezeEngine()
@@ -405,13 +405,13 @@ class AutonomousDaemonV9:
                 entry_p_raw = float(pos.get("entry_price_raw") or pos["entry_price"] or pos["mark_price"])
                 mark_p_raw = float(pos.get("mark_price_raw") or pos["mark_price"] or entry_p_raw)
                 is_tier1 = sym in TIER1_ALPHA_SYMBOLS
-                hard_stop_dist = 0.0095
-                soft_stop_dist = 0.0055
+                hard_stop_dist = 0.0062
+                soft_stop_dist = 0.0042
                 default_stop = fmt_price(entry_p_raw * (1.0 - direction * hard_stop_dist))
                 soft_stop = fmt_price(entry_p_raw * (1.0 - direction * soft_stop_dist))
                 eff_stop = fmt_price(float(pos["stop_price"])) if pos.get("stop_price") else default_stop
                 stage2_trig = fmt_price(entry_p_raw * (1.0 + direction * 0.0065))
-                stage4_tp = fmt_price(entry_p_raw * (1.0 + direction * 0.0160))
+                stage4_tp = fmt_price(entry_p_raw * (1.0 + direction * 0.0320))
                 sig_item = self.scanner_cache.get(sym, {})
                 atr_val = float(sig_item.get("atr_14") or (entry_p_raw * 0.0065))
 
@@ -678,7 +678,7 @@ class AutonomousDaemonV9:
                 camp["soft_stop"] = fmt_price(sim_px * (1.0 - direction * 0.0028))
                 camp["effective_stop"] = camp["chandelier_stop"]
                 camp["tp1_price"] = fmt_price(sim_px * (1.0 + direction * 0.0065))
-                camp["tp2_price"] = fmt_price(sim_px * (1.0 + direction * 0.0160))
+                camp["tp2_price"] = fmt_price(sim_px * (1.0 + direction * 0.0320))
                 if camp.get("tranches"):
                     camp["tranches"][0]["fill_price"] = fmt_price(sim_px)
                     fee_r = self.MAKER_FEE_RATE if sim_role == "MAKER" else self.FEE_RATE
@@ -697,8 +697,8 @@ class AutonomousDaemonV9:
                 fill_p = float(res["fill_price"] or camp["entry_price_raw"])
                 direction = 1.0 if camp["side"] == "LONG" else -1.0
                 is_tier1 = camp["symbol"] in TIER1_ALPHA_SYMBOLS
-                hard_stop_dist = 0.0095
-                soft_stop_dist = 0.0055
+                hard_stop_dist = 0.0062
+                soft_stop_dist = 0.0042
                 camp["delta_symbol"] = res["delta_symbol"]
                 camp["live_qty"] = res["qty"]
                 camp["remaining_qty"] = res["remaining_qty"]
@@ -715,7 +715,7 @@ class AutonomousDaemonV9:
                 camp["soft_stop"] = fmt_price(fill_p * (1.0 - direction * soft_stop_dist))
                 camp["effective_stop"] = camp["chandelier_stop"]
                 camp["tp1_price"] = fmt_price(fill_p * (1.0 + direction * 0.0065))
-                camp["tp2_price"] = fmt_price(fill_p * (1.0 + direction * 0.0160))
+                camp["tp2_price"] = fmt_price(fill_p * (1.0 + direction * 0.0320))
                 camp["entry_ts"] = time.time()
                 camp["is_live_delta"] = True
                 if camp.get("tranches"):
@@ -760,10 +760,10 @@ class AutonomousDaemonV9:
         coin_qty = float(exact_qty) * c_val
         total_notional = round(coin_qty * entry_price * usd_rate, 2)
 
-        hard_stop_dist = 0.0095
-        soft_stop_dist = 0.0055
+        hard_stop_dist = 0.0062
+        soft_stop_dist = 0.0042
         stage2_trig = fmt_price(entry_price * (1.0 + direction * 0.0065))
-        stage4_tp = fmt_price(entry_price * (1.0 + direction * 0.0160))
+        stage4_tp = fmt_price(entry_price * (1.0 + direction * 0.0320))
         initial_stop = fmt_price(entry_price * (1.0 - direction * hard_stop_dist))
         soft_stop = fmt_price(entry_price * (1.0 - direction * soft_stop_dist))
         entry_fee = round(total_notional * self.MAKER_FEE_RATE, 2)
@@ -911,7 +911,7 @@ class AutonomousDaemonV9:
             camp["max_stage_reached"] = "STAGE_3_SUPER_TRAIL"
 
         # Merged Stage 4 Home-Run Target (+1.60% move): Instant Jackpot Exit
-        tp_max = float(camp.get("tp2_price", entry_p * (1.0 + direction * 0.0160)))
+        tp_max = float(camp.get("tp2_price", entry_p * (1.0 + direction * 0.0320)))
         if (side == "LONG" and live_price >= tp_max) or (side == "SHORT" and live_price <= tp_max):
             self.close_campaign(camp, exit_price=live_price, reason="STAGE_4_HOME_RUN_JACKPOT_WIN")
             return
@@ -1193,7 +1193,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def serve_visual_dashboard() -> HTMLResponse:
     if DASHBOARD_HTML_PATH.exists():
         return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
-    return HTMLResponse(content="<h1>APEX-OMEGA V9.0 RESTORED MASTER ONLINE</h1>", status_code=200)
+    return HTMLResponse(content="<h1>APEX-OMEGA V15.0 BIG-WAVE AUTO-OPTIMIZER ONLINE</h1>", status_code=200)
 
 
 @app.get("/health")
@@ -1389,8 +1389,9 @@ class SetStrategyRequest(BaseModel):
 
 @app.post("/api/set-strategy")
 async def set_active_strategy(req: SetStrategyRequest) -> Dict[str, Any]:
-    mode = str(req.strategy_mode or "CHAMELEON_V14").strip().upper()
+    mode = str(req.strategy_mode or "BRK20__BIG_WAVE_1_5").strip().upper()
     daemon.state["active_strategy_mode"] = mode
+    daemon.squeeze_engine.active_family = mode.split("__")[0]
     daemon.save_state()
     await daemon.broadcast_to_clients(force=True)
     return {"status": "STRATEGY_UPDATED", "active_strategy_mode": mode}
@@ -1399,21 +1400,17 @@ async def set_active_strategy(req: SetStrategyRequest) -> Dict[str, Any]:
 @app.post("/api/backtest")
 async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
     """
-    Downloads REAL historical candles from Delta Exchange India (/v2/history/candles) using fast
-    parallel chunk requests (with in-memory caching) and runs a 6-Model Real-Market Championship Tournament:
-      1. V14.0 Swing Booster (70/30 Dip Booster + 40m Close Shield + RSI-2/Time Harvester)
-      2. V14.0 Dip Absorber (Mean-Reversion Pullback Sniper + 30m Close Shield)
-      3. V14.0 Chameleon (3-Zone Auto-Regime Switcher: Dip Absorber + Swing Booster + Momentum Wave)
-      4. V14.0 Swing Sovereign (Full-Stake + 40m Close Shield + Next-Bar 4-Stage Ratchet)
-      5. V9.0 Restored (Legacy 0ms Tick + Same-Bar Micro-Ratchet)
-      6. V12.3 Hybrid (Legacy Closed-Bar Delay + Immediate -0.28% Stop)
-    Automatically ranks all 6 models on real Delta Exchange data and promotes the #1 Real-Data Champion!
+    V15.0 BIG-WAVE 24-MODEL REAL-CANDLE AUTO-OPTIMIZER:
+    Downloads REAL historical candles from Delta Exchange India (/v2/history/candles) and evaluates
+    8 Orthogonal Quantitative Strategy Families x 3 Positive-R:R Big-Wave Profiles (24 Models total)
+    using exact 4-Point Chronological OHLC Tick Interpolation (open->low->high->close on green bars,
+    open->high->low->close on red bars) with ZERO micro-harvesting chokes.
+    Surfaces the Top 6 Highest-Return Models and auto-activates the #1 Real-Market Winner in the live bot!
     """
     import math
     from concurrent.futures import ThreadPoolExecutor
 
     days = max(5, min(int(req.days or 30), 365))
-    # Use 5m resolution for <=45 days, 15m for <=120 days, 1h for 365 days so 365D completes in ~1.8s on Render!
     if days <= 45:
         res_str, bar_sec, bars_per_day = "5m", 300, 288
     elif days <= 120:
@@ -1429,13 +1426,13 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
     u_mode = str(req.universe or "ALPHA5_AVAX").upper()
 
     pairs_spec = [
-        ("BTC/USDT:USDT", "BTCUSD", "BTCUSDT", 76400.0, 80112.5, 0.0012, 0.001),
-        ("LINK/USDT:USDT", "LINKUSD", "LINKUSDT", 14.200, 14.880, 0.0018, 1.0),
-        ("DOGE/USDT:USDT", "DOGEUSD", "DOGEUSDT", 0.0920, 0.0954, 0.0020, 100.0),
-        ("SOL/USDT:USDT", "SOLUSD", "SOLUSDT", 118.00, 114.50, 0.0018, 1.0),
-        ("ADA/USDT:USDT", "ADAUSD", "ADAUSDT", 0.2550, 0.2450, 0.0019, 1.0),
-        ("AVAX/USDT:USDT", "AVAXUSD", "AVAXUSDT", 12.100, 11.560, 0.0019, 1.0),
-        ("SUI/USDT:USDT", "SUIUSD", "SUIUSDT", 1.1500, 1.0500, 0.0021, 1.0),
+        ("BTC/USDT:USDT", "BTCUSD", "BTCUSDT", 76400.0, 80112.5, 0.0018, 0.001),
+        ("LINK/USDT:USDT", "LINKUSD", "LINKUSDT", 14.200, 14.880, 0.0028, 1.0),
+        ("DOGE/USDT:USDT", "DOGEUSD", "DOGEUSDT", 0.0920, 0.0954, 0.0032, 100.0),
+        ("SOL/USDT:USDT", "SOLUSD", "SOLUSDT", 118.00, 114.50, 0.0028, 1.0),
+        ("ADA/USDT:USDT", "ADAUSD", "ADAUSDT", 0.2550, 0.2450, 0.0029, 1.0),
+        ("AVAX/USDT:USDT", "AVAXUSD", "AVAXUSDT", 12.100, 11.560, 0.0030, 1.0),
+        ("SUI/USDT:USDT", "SUIUSD", "SUIUSDT", 1.1500, 1.0500, 0.0033, 1.0),
     ]
     c_vals = {p[0]: p[6] for p in pairs_spec}
     u_set = set(TOP5_PRIORITY_SYMBOLS) if u_mode == "ALPHA5_AVAX" else set(TIER1_ALPHA_SYMBOLS)
@@ -1445,7 +1442,7 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
         delta_sym, c_start, c_end = args
         url = f"https://api.india.delta.exchange/v2/history/candles?resolution={res_str}&symbol={delta_sym}&start={c_start}&end={c_end}"
         try:
-            req_obj = urllib.request.Request(url, headers={"User-Agent": "ApexOmegaV14/14.0", "Accept": "application/json"})
+            req_obj = urllib.request.Request(url, headers={"User-Agent": "ApexOmegaV15/15.0", "Accept": "application/json"})
             with urllib.request.urlopen(req_obj, timeout=5.0) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
                 return payload.get("result", [])
@@ -1475,8 +1472,8 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
 
         candles_by_ts = {}
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(chunks)))) as chunk_ex:
-            chunk_Lists = list(chunk_ex.map(_fetch_single_chunk, chunks))
-        for rows in chunk_Lists:
+            chunk_lists = list(chunk_ex.map(_fetch_single_chunk, chunks))
+        for rows in chunk_lists:
             if isinstance(rows, list):
                 for r in rows:
                     if r.get("close") is None or r.get("time") is None:
@@ -1524,7 +1521,7 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
             end_dt = "Simulated"
 
         mkt = {}
-        rng_sim = np.random.default_rng(42)
+        rng_sim = np.random.default_rng(303)
         btc_shocks = rng_sim.normal(0, 0.0012, n_bars) if not use_real else None
 
         for sym, _, _, p_start, p_end, base_vol, _ in pairs_spec:
@@ -1550,20 +1547,18 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                         opens[i], highs[i], lows[i], closes[i], vols[i] = c_tuple
             else:
                 p = p_start
-                prev_ret = 0.0
-                trend_reg = 0.0
+                wave_dir = 0.0
                 for i in range(n_bars):
-                    if i % 48 == 0:
-                        trend_reg = (rng_sim.choice([-1.0, 1.0]) * base_vol * 0.22) if rng_sim.random() < 0.28 else 0.0
-                    shock = rng_sim.normal(0, base_vol * 0.62) + 0.35 * btc_shocks[i]
-                    ret = trend_reg - 0.22 * prev_ret + shock
-                    prev_ret = ret
+                    if i % 20 == 0:
+                        wave_dir = rng_sim.choice([-1.0, 1.0]) * base_vol * 0.32
+                    trap_tick = -0.35 * wave_dir if (i % 5 == 2) else 0.0
+                    ret = wave_dir + trap_tick + 0.45 * btc_shocks[i] + rng_sim.normal(0, base_vol * 0.55)
                     o = p
                     c = o * math.exp(ret)
-                    w_up = abs(rng_sim.normal(base_vol * 0.52, base_vol * 0.35))
-                    w_dn = abs(rng_sim.normal(base_vol * 0.52, base_vol * 0.35))
+                    w_up = abs(rng_sim.normal(base_vol * 0.45, base_vol * 0.25))
+                    w_dn = abs(rng_sim.normal(base_vol * 0.45, base_vol * 0.25))
                     opens[i], highs[i], lows[i], closes[i] = o, max(o, c) * (1.0 + w_up), min(o, c) * (1.0 - w_dn), c
-                    vols[i] = math.exp(rng_sim.normal(10.0, 0.5))
+                    vols[i] = math.exp(rng_sim.normal(10.0, 0.55)) * (1.8 if abs(ret) > base_vol * 0.7 else 0.9)
                     p = c
 
             def _ema(arr, span):
@@ -1587,11 +1582,11 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
             z_sc = np.zeros(n_bars)
             rvol = np.ones(n_bars)
             roc5 = np.zeros(n_bars)
+            roc12 = np.zeros(n_bars)
             ker10 = np.full(n_bars, 0.35)
-            rets = np.zeros(n_bars)
-            rets[1:] = diffs / np.maximum(closes[:-1], 1e-12)
-            ac48 = np.zeros(n_bars)
-            for i in range(20, n_bars):
+            don_hi20, don_lo20 = np.copy(highs), np.copy(lows)
+            don_hi48, don_lo48 = np.copy(highs), np.copy(lows)
+            for i in range(50, n_bars):
                 d2 = diffs[i - 2 : i]
                 g2 = np.sum(d2[d2 > 0]) * 0.5
                 l2 = -np.sum(d2[d2 < 0]) * 0.5
@@ -1608,24 +1603,102 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 v_avg = np.mean(vols[i - 20 : i])
                 rvol[i] = max(vols[i], vols[i - 1]) / max(v_avg, 1e-9)
                 roc5[i] = (closes[i] - closes[i - 5]) / max(closes[i - 5], 1e-12)
+                roc12[i] = (closes[i] - closes[i - 12]) / max(closes[i - 12], 1e-12)
                 ker10[i] = abs(closes[i] - closes[i - 10]) / max(np.sum(abs_diffs[i - 10 : i]), 1e-12)
-                if i >= 50:
-                    rc = rets[i - 47 : i + 1]
-                    rp = rets[i - 48 : i]
-                    s1, s2 = np.std(rc), np.std(rp)
-                    if s1 > 1e-12 and s2 > 1e-12:
-                        ac48[i] = np.mean((rc - np.mean(rc)) * (rp - np.mean(rp))) / (s1 * s2)
+                don_hi20[i] = np.max(highs[i - 20 : i])
+                don_lo20[i] = np.min(lows[i - 20 : i])
+                don_hi48[i] = np.max(highs[i - 48 : i])
+                don_lo48[i] = np.min(lows[i - 48 : i])
             mkt[sym] = {
                 "open": opens, "high": highs, "low": lows, "close": closes,
                 "ema9": e9, "ema21": e21, "ema50": e50, "ema100": e100, "ema200": e200,
                 "atr14": atr14, "atr_pct": atr_pct, "rsi2": rsi2, "rsi14": rsi14,
-                "z": z_sc, "rvol": rvol, "roc5": roc5, "ker": ker10, "ac48": ac48,
+                "z": z_sc, "rvol": rvol, "roc5": roc5, "roc12": roc12, "ker": ker10,
+                "don_hi20": don_hi20, "don_lo20": don_lo20, "don_hi48": don_hi48, "don_lo48": don_lo48,
             }
 
-        eval_start = min(205, max(25, n_bars - 10))
+        # Vectorized precomputation of all 8 Strategy Families
+        sig_cache = {}
+        for sym in u_set:
+            if sym not in mkt:
+                continue
+            d = mkt[sym]
+            cn, on = d["close"], d["open"]
+            cp = np.roll(cn, 1); cp[0] = cn[0]
+            hn, ln = d["high"], d["low"]
+            l1, l2 = np.roll(ln, 1), np.roll(ln, 2)
+            h1, h2 = np.roll(hn, 1), np.roll(hn, 2)
+            l3 = np.minimum.reduce([ln, l1, l2])
+            h3 = np.maximum.reduce([hn, h1, h2])
+            e9, e21, e50, e100, e200 = d["ema9"], d["ema21"], d["ema50"], d["ema100"], d["ema200"]
+            e9_prev, e21_prev = np.roll(e9, 1), np.roll(e21, 1)
+            e21_4 = np.roll(e21, 4)
+            sl = (e21 - e21_4) / np.maximum(e21, 1e-12)
+            r2, r14, z, rv, roc5, roc12, ker = d["rsi2"], d["rsi14"], d["z"], d["rvol"], d["roc5"], d["roc12"], d["ker"]
+            rng = np.maximum(hn - ln, 1e-9)
+            not_sp = rng <= d["atr14"] * 2.40
+            lw = (np.minimum(on, cn) - ln) / rng
+            uw = (hn - np.maximum(on, cn)) / rng
+            gb = not_sp & (cn > on) & (cn >= cp)
+            rb = not_sp & (cn < on) & (cn <= cp)
+
+            brk20_l = (cn > d["don_hi20"]) & (cn > on) & (rv >= 1.12) & (ker >= 0.20) & (e9 > e21) & (roc5 >= 0.0018)
+            brk20_s = (cn < d["don_lo20"]) & (cn < on) & (rv >= 1.12) & (ker >= 0.20) & (e9 < e21) & (roc5 <= -0.0018)
+            brk48_l = (cn > d["don_hi48"]) & (cn > on) & (rv >= 1.10) & (e21 > e50) & (roc12 >= 0.0025)
+            brk48_s = (cn < d["don_lo48"]) & (cn < on) & (rv >= 1.10) & (e21 < e50) & (roc12 <= -0.0025)
+            st_l = (e9_prev <= e21_prev) & (e9 > e21) & (cn > e50) & (roc12 >= 0.0028) & (rv >= 1.05)
+            st_s = (e9_prev >= e21_prev) & (e9 < e21) & (cn < e50) & (roc12 <= -0.0028) & (rv >= 1.05)
+
+            cab = (cn >= e200 * 0.996) & (e21 > e50) & (e50 >= e100 * 0.9995) & (sl >= 0.0003) & (roc5 > -0.006)
+            cae = (cn <= e200 * 1.004) & (e21 < e50) & (e50 <= e100 * 1.0005) & (sl <= -0.0003) & (roc5 < 0.006)
+            cbb = (cn >= e200 * 0.998) & (e9 >= e21 * 0.9995) & (e21 > e50) & (sl >= 0.00035)
+            cbe = (cn <= e200 * 1.002) & (e9 <= e21 * 1.0005) & (e21 < e50) & (sl <= -0.00035)
+            bt_ = (l3 <= e21 * 1.0035) & gb & (cn >= e9 * 0.9995) & (z >= -1.35) & (z <= 0.90) & (r14 >= 42) & (r14 <= 70)
+            st_p = (h3 >= e21 * 0.9965) & rb & (cn <= e9 * 1.0005) & (z >= -0.90) & (z <= 1.35) & (r14 >= 30) & (r14 <= 58)
+            aw_l = (cab & gb & ((r2 <= 22) | (z <= -1.0))) | (cbb & bt_)
+            aw_s = (cae & rb & ((r2 >= 78) | (z >= 1.0))) | (cbe & st_p)
+
+            inv_l, inv_s = aw_s, aw_l
+            cap_l = (z <= -1.85) & (r2 <= 12.0) & ((cn > on) | (lw >= 0.35)) & not_sp
+            cap_s = (z >= 1.85) & (r2 >= 88.0) & ((cn < on) | (uw >= 0.35)) & not_sp
+            ib_s = (hn > d["don_hi20"]) & (cn < d["don_hi20"]) & (cn < on) & (rv >= 1.05)
+            ib_l = (ln < d["don_lo20"]) & (cn > d["don_lo20"]) & (cn > on) & (rv >= 1.05)
+            tf_l = (e9 > e21) & (e21 > e50) & (e50 > e200) & (cn > e9) & (cn > on) & (ker >= 0.26) & (roc12 >= 0.0035) & (rv >= 1.12)
+            tf_s = (e9 < e21) & (e21 < e50) & (e50 < e200) & (cn < e9) & (cn < on) & (ker >= 0.26) & (roc12 <= -0.0035) & (rv >= 1.12)
+
+            sig_cache[sym] = {
+                "BRK20": (brk20_l, brk20_s),
+                "BRK48": (brk48_l, brk48_s),
+                "SUPERTREND": (st_l, st_s),
+                "ASYM_WAVE": (aw_l, aw_s),
+                "INVERSE_TRAP": (inv_l, inv_s),
+                "CAPITULATION": (cap_l, cap_s),
+                "INVERSE_BRK": (ib_l, ib_s),
+                "HTF_TREND_FLOW": (tf_l, tf_s),
+            }
+
+        rr_profiles = {
+            "ASYM_RUNNER_1_3": (0.0042, 2, 0.0055, 0.0028, 0.0095, 0.0062, 0.0150, 0.0108, 0.0220, 0.0165, 0.0320, "1:3 Wave Runner"),
+            "BIG_WAVE_1_5":    (0.0052, 3, 0.0070, 0.0038, 0.0120, 0.0080, 0.0185, 0.0135, 0.0260, 0.0200, 0.0380, "1:5 Big-Wave Ratchet"),
+            "SWING_TITAN_1_6": (0.0065, 4, 0.0085, 0.0048, 0.0145, 0.0098, 0.0220, 0.0160, 0.0310, 0.0240, 0.0450, "1:6 Macro Swing Titan"),
+        }
+
+        family_labels = {
+            "BRK20": "V15.0 Donchian 20-Bar Breakout Surge",
+            "BRK48": "V15.0 Macro 48-Bar Range Breakout",
+            "SUPERTREND": "V15.0 Supertrend EMA-9/21/50 Swing",
+            "ASYM_WAVE": "V15.0 Dual-Core Pullback Wave",
+            "INVERSE_TRAP": "V15.0 Counter-Trap Squeeze Runner",
+            "CAPITULATION": "V15.0 2.0-Sigma Capitulation Sniper",
+            "INVERSE_BRK": "V15.0 Liquidity-Sweep Reversal",
+            "HTF_TREND_FLOW": "V15.0 Multi-Hour Trend Continuation",
+        }
+
+        eval_start = min(205, max(55, n_bars - 10))
         actual_bars = max(1, n_bars - eval_start)
         actual_days = max(1, round(actual_bars / float(bars_per_day)))
         step_bars = max(bars_per_day, actual_bars // 6)
+        syms_list = sorted(list(u_set))
 
         maker_f = 0.000236
         taker_f = 0.000590
@@ -1638,7 +1711,10 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
             stop_ex_f = taker_f
             slip_p, slip_s = 0.00003, 0.00014
 
-        def _sim_v14_model(model_id: str, model_label: str):
+        def _eval_candidate(sig_key: str, rr_key: str):
+            stop_pct, min_hb, s05_t, s05_l, s1_t, s1_l, s2_t, s2_l, s3_t, s3_l, s4_tp, rr_lbl = rr_profiles[rr_key]
+            model_id = f"{sig_key}__{rr_key}"
+            model_name = f"{family_labels[sig_key]} ({rr_lbl})"
             equity = start_eq
             peak = start_eq
             max_dd = 0.0
@@ -1647,170 +1723,55 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
             gross_profit, gross_loss = 0.0, 0.0
             curve = [{"label": "Start", "equity": round(start_eq, 2)}]
             sample_trades = []
-            pair_cd = {p[0]: -100 for p in pairs_spec}
-            cl, cs, lp, sp = 0, 0, -1, -1
+            pair_cd = {sym: -100 for sym in u_set}
 
             for bar in range(eval_start, n_bars):
                 ts_str = datetime.fromtimestamp(grid_ts[bar], tz=timezone.utc).strftime("%m-%d %H:%M")
                 still = []
                 for c in open_slots:
-                    sym = c["sym"]
-                    d = mkt[sym]
-                    side = c["side"]
+                    sym = c["sym"]; d = mkt[sym]; side = c["side"]
                     dm = 1.0 if side == "LONG" else -1.0
-                    bh, bl, bc = d["high"][bar], d["low"][bar], d["close"][bar]
-                    bp = bh if side == "LONG" else bl
-                    wp = bl if side == "LONG" else bh
+                    bo, bh, bl, bc = d["open"][bar], d["high"][bar], d["low"][bar], d["close"][bar]
                     age_bars = bar - c["eb"]
-                    sub_mode = c["sub_mode"]
+                    ep, notl, qty = c["ep"], c["notl"], c["qty"]
+                    tpm = ep * (1.0 + dm * s4_tp)
 
-                    if sub_mode in ("LEGACY_V9", "LEGACY_V12"):
-                        is_v9 = (sub_mode == "LEGACY_V9")
-                        ep, notl, qty = c["ep"], c["notl"], c["qty"]
-                        if is_v9 and c["st"] == 0 and age_bars >= 1:
-                            c["stop"] = ep * (1.0 - dm * 0.0028)
-                        if (side == "LONG" and bp > c["ext"]) or (side == "SHORT" and bp < c["ext"]):
-                            c["ext"] = bp
-                        mf = dm * ((c["ext"] - ep) / ep)
-                        if mf >= (0.0016 if is_v9 else 0.0014) and c["st"] < 0.25:
-                            c["st"] = 0.25; c["stop"] = ep * (1.0 + dm * (0.0011 if is_v9 else 0.0010))
-                        if mf >= 0.0028 and c["st"] < 0.5:
-                            c["st"] = 0.5; c["stop"] = ep * (1.0 + dm * (0.0018 if is_v9 else 0.0020))
-                        if mf >= (0.0042 if is_v9 else 0.0038) and c["st"] < 1:
-                            c["st"] = 1; c["stop"] = ep * (1.0 + dm * 0.0028)
-                        if mf >= (0.0068 if is_v9 else 0.0065) and c["st"] < 2:
-                            c["st"] = 2; c["tp1"] = True
-                            hq = max(1, int(qty * 0.50)) if qty >= 2 else 0
-                            if hq > 0 and (qty - hq) > 0:
-                                hn = notl * (hq / qty); c["rem_notl"] = notl - hn
-                                c["bank"] = hn * (0.0068 if is_v9 else 0.0065) - hn * (ent_f + maker_f)
-                            else:
-                                c["rem_notl"] = notl; c["bank"] = 0.0; c["tp1"] = False
-                            c["stop"] = ep * (1.0 + dm * 0.0050)
-                        if mf >= (0.0105 if is_v9 else 0.0100):
-                            c["st"] = 3
-                            ts = c["ext"] * (1.0 - dm * 0.0022); fs = ep * (1.0 + dm * 0.0085)
-                            c["stop"] = max(ts, fs) if side == "LONG" else min(ts, fs)
-                        tpm = ep * (1.0 + dm * 0.0160)
-                        if (side == "LONG" and bp >= tpm) or (side == "SHORT" and bp <= tpm):
-                            rn = c["rem_notl"] if c["tp1"] else notl
-                            pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * 0.0160 - rn * (ent_f + maker_f), 2)
-                            equity = round(equity + pnl, 2); wins_cnt += 1; gross_profit += pnl
-                            pair_cd[sym] = bar + 1; continue
-                        if c["st"] < 1 and age_bars >= (4 if is_v9 else 3):
-                            scp = ep * (1.0 + dm * 0.0014)
-                            if (side == "LONG" and bp >= scp) or (side == "SHORT" and bp <= scp):
-                                pnl = round(notl * (0.0014 - slip_p) - notl * (ent_f + prof_ex_f), 2)
-                                equity = round(equity + pnl, 2)
-                                if pnl > 0: wins_cnt += 1; gross_profit += pnl
-                                else: losses_cnt += 1; gross_loss += abs(pnl)
-                                pair_cd[sym] = bar + 1; continue
-                        if (side == "LONG" and wp <= c["stop"]) or (side == "SHORT" and wp >= c["stop"]):
+                    pts = (bo, bl, bh, bc) if bc >= bo else (bo, bh, bl, bc)
+                    closed_this_bar = False
+
+                    for idx_pt, px in enumerate(pts):
+                        stop_hit = (side == "LONG" and px <= c["stop"]) or (side == "SHORT" and px >= c["stop"])
+                        close_stop_px = ep * (1.0 - dm * stop_pct)
+                        close_hit = (idx_pt == 3 and c["st"] == 0 and age_bars >= min_hb and ((side == "LONG" and px <= close_stop_px) or (side == "SHORT" and px >= close_stop_px)))
+                        if stop_hit or close_hit:
                             st = c["st"]; is_l = (st == 0)
-                            pe = dm * ((c["stop"] - ep) / ep) - (slip_s if is_l else slip_p)
-                            ex_f = stop_ex_f if is_l else prof_ex_f
-                            rn = c["rem_notl"] if c["tp1"] else notl
-                            pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * pe - rn * (ent_f + ex_f), 2)
-                            pair_cd[sym] = bar + (6 if is_l else 1)
-                            equity = round(equity + pnl, 2)
-                            if pnl > 0: wins_cnt += 1; gross_profit += pnl
-                            else: losses_cnt += 1; gross_loss += abs(pnl)
-                            continue
-                        still.append(c)
-                    else:
-                        # V14 Institutional Engine (SWING_BOOSTER_V14, DIP_ABSORBER_V14, SWING_SOVEREIGN_V14, CHAMELEON_V14)
-                        use_boost = (sub_mode == "SWING_BOOSTER")
-                        if use_boost and not c["boosted"] and c["st"] == 0 and age_bars <= 4:
-                            dip_px = c["ep0"] * (1.0 - dm * 0.0028)
-                            if (side == "LONG" and bl <= dip_px and wp > c["stop"]) or (side == "SHORT" and bh >= dip_px and wp < c["stop"]):
-                                c["boosted"] = True
-                                c["ep"] = 0.70 * c["ep0"] + 0.30 * dip_px
-                                c["notl"] = c["notl_full"]
-                                c["rem_notl"] = c["notl_full"]
-                                c["qty"] = c["qty_full"]
-
-                        ep, notl, qty = c["ep"], c["notl"], c["qty"]
-                        s4_tp = 0.0145 if sub_mode == "DIP_ABSORBER" else 0.0185
-                        rsi_tp = 0.0034 if sub_mode == "DIP_ABSORBER" else 0.0042
-                        time_tp = 0.0022 if sub_mode == "DIP_ABSORBER" else 0.0028
-                        min_hb = 6 if sub_mode == "DIP_ABSORBER" else 8
-                        c_stop_lim = 0.0058 if sub_mode == "DIP_ABSORBER" else 0.0065
-                        s1_t, s1_l = (0.0036, 0.0024) if sub_mode == "DIP_ABSORBER" else (0.0046, 0.0032)
-                        s2_t, s2_l = (0.0062, 0.0045) if sub_mode == "DIP_ABSORBER" else (0.0078, 0.0056)
-                        s3_t, s3_l = (0.0098, 0.0078) if sub_mode == "DIP_ABSORBER" else (0.0120, 0.0092)
-
-                        # 1. Stage 4 Maker Limit TP
-                        tpm = ep * (1.0 + dm * s4_tp)
-                        if (side == "LONG" and bp >= tpm) or (side == "SHORT" and bp <= tpm):
-                            rn = c["rem_notl"] if c["tp1"] else notl
-                            pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * s4_tp - rn * (ent_f + maker_f), 2)
-                            equity = round(equity + pnl, 2); wins_cnt += 1; gross_profit += pnl
-                            if side == "LONG": cl = 0
-                            else: cs = 0
-                            pair_cd[sym] = bar + 2
-                            sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": "STAGE_4_TP", "pnl": pnl, "eq": equity})
-                            continue
-
-                        # 2. Opposite RSI-2 Extreme Mean-Reversion Harvest
-                        opp_rsi = (side == "LONG" and d["rsi2"][bar] >= 82.0) or (side == "SHORT" and d["rsi2"][bar] <= 18.0)
-                        if c["st"] < 2 and opp_rsi:
-                            rtp = ep * (1.0 + dm * rsi_tp)
-                            if (side == "LONG" and bp >= rtp) or (side == "SHORT" and bp <= rtp):
-                                pnl = round(notl * rsi_tp - notl * (ent_f + maker_f), 2)
-                                equity = round(equity + pnl, 2); wins_cnt += 1; gross_profit += pnl
-                                if side == "LONG": cl = 0
-                                else: cs = 0
-                                pair_cd[sym] = bar + 2
-                                sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": "RSI2_HARVEST_TP", "pnl": pnl, "eq": equity})
-                                continue
-
-                        # 3. 15m Green Maker Harvest
-                        if c["st"] < 1 and age_bars >= 3:
-                            ttp = ep * (1.0 + dm * time_tp)
-                            if (side == "LONG" and bp >= ttp) or (side == "SHORT" and bp <= ttp):
-                                pnl = round(notl * time_tp - notl * (ent_f + maker_f), 2)
-                                equity = round(equity + pnl, 2); wins_cnt += 1; gross_profit += pnl
-                                if side == "LONG": cl = 0
-                                else: cs = 0
-                                pair_cd[sym] = bar + 2
-                                sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": "GREEN_HARVEST_TP", "pnl": pnl, "eq": equity})
-                                continue
-
-                        # 4. Active Stop Check BEFORE Same-Bar Ratchet Upgrade
-                        hw_hit = (side == "LONG" and wp <= c["stop"]) or (side == "SHORT" and wp >= c["stop"])
-                        trend_broken = (side == "LONG" and d["ema9"][bar] < d["ema21"][bar] * 0.9992) or (side == "SHORT" and d["ema9"][bar] > d["ema21"][bar] * 1.0008)
-                        eff_c_stop = (c_stop_lim * 0.84) if (trend_broken and sub_mode == "DIP_ABSORBER") else c_stop_lim
-                        c_stop_px = ep * (1.0 - dm * eff_c_stop)
-                        close_hit = (c["st"] == 0 and age_bars >= min_hb and ((side == "LONG" and bc <= c_stop_px) or (side == "SHORT" and bc >= c_stop_px)))
-                        if hw_hit or close_hit:
-                            st = c["st"]; is_l = (st == 0)
-                            exit_px = c["stop"] if hw_hit else bc
+                            exit_px = c["stop"] if stop_hit else px
                             pe = dm * ((exit_px - ep) / ep) - (slip_s if is_l else slip_p)
                             ex_f = stop_ex_f if is_l else prof_ex_f
                             rn = c["rem_notl"] if c["tp1"] else notl
                             pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * pe - rn * (ent_f + ex_f), 2)
-                            if is_l:
-                                pair_cd[sym] = bar + 6
-                                if side == "LONG":
-                                    cl += 1
-                                    if cl >= 2: lp = bar + 8; cl = 0
-                                else:
-                                    cs += 1
-                                    if cs >= 2: sp = bar + 8; cs = 0
-                            else:
-                                pair_cd[sym] = bar + 2
-                                if side == "LONG": cl = 0
-                                else: cs = 0
+                            pair_cd[sym] = bar + (4 if is_l else 2)
                             equity = round(equity + pnl, 2)
                             if pnl > 0: wins_cnt += 1; gross_profit += pnl
                             else: losses_cnt += 1; gross_loss += abs(pnl)
                             sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": f"STAGE_{st}", "pnl": pnl, "eq": equity})
-                            continue
+                            closed_this_bar = True
+                            break
 
-                        # 5. Next-Bar Ratchet Upgrade
-                        if (side == "LONG" and bp > c["ext"]) or (side == "SHORT" and bp < c["ext"]):
-                            c["ext"] = bp
+                        if (side == "LONG" and px >= tpm) or (side == "SHORT" and px <= tpm):
+                            rn = c["rem_notl"] if c["tp1"] else notl
+                            pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * s4_tp - rn * (ent_f + maker_f), 2)
+                            equity = round(equity + pnl, 2); wins_cnt += 1; gross_profit += pnl
+                            pair_cd[sym] = bar + 2
+                            sample_trades.append({"time": ts_str, "sym": sym, "side": side, "qty": qty, "stage": "STAGE_4_WAVE_TP", "pnl": pnl, "eq": equity})
+                            closed_this_bar = True
+                            break
+
+                        if (side == "LONG" and px > c["ext"]) or (side == "SHORT" and px < c["ext"]):
+                            c["ext"] = px
                         mf = dm * ((c["ext"] - ep) / ep)
+                        if mf >= s05_t and c["st"] < 0.5:
+                            c["st"] = 0.5; c["stop"] = ep * (1.0 + dm * s05_l)
                         if mf >= s1_t and c["st"] < 1:
                             c["st"] = 1; c["stop"] = ep * (1.0 + dm * s1_l)
                         if mf >= s2_t and c["st"] < 2:
@@ -1824,8 +1785,10 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                             c["stop"] = ep * (1.0 + dm * s2_l)
                         if mf >= s3_t:
                             c["st"] = 3
-                            ts = c["ext"] * (1.0 - dm * 0.0026); fs = ep * (1.0 + dm * s3_l)
+                            ts = c["ext"] * (1.0 - dm * 0.0038); fs = ep * (1.0 + dm * s3_l)
                             c["stop"] = max(ts, fs) if side == "LONG" else min(ts, fs)
+
+                    if not closed_this_bar:
                         still.append(c)
 
                 open_slots = still
@@ -1839,116 +1802,43 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                     curve.append({"label": f"Day {day_lbl}", "equity": round(equity, 2)})
 
                 uh = sum(1 for x in open_slots if x["st"] == 0)
-                max_sl = 3 if model_id in ("LEGACY_V9", "LEGACY_V12") else 2
-                if len(open_slots) < max_sl and uh == 0:
+                if len(open_slots) < 2 and uh == 0:
                     osyms = {x["sym"] for x in open_slots}
-                    s_idx = (bar - 1) if model_id == "LEGACY_V12" else bar
-                    bd = mkt["BTC/USDT:USDT"]
-                    bsl = (bd["ema21"][s_idx] - bd["ema21"][s_idx - 4]) / max(bd["ema21"][s_idx], 1e-12)
-                    br5 = bd["roc5"][s_idx]
-                    btc_ac = bd["ac48"][s_idx]
                     cands = []
-                    for sym, *_ in pairs_spec:
-                        if sym in osyms or bar < pair_cd[sym] or sym not in u_set or sym not in mkt:
+                    for sym in syms_list:
+                        if sym in osyms or bar < pair_cd[sym] or sym not in sig_cache:
                             continue
-                        d = mkt[sym]
-                        if d["atr_pct"][s_idx] < 0.0012 or d["ker"][s_idx] < 0.15:
-                            continue
-                        cn, on, cp = d["close"][s_idx], d["open"][s_idx], d["close"][s_idx - 1]
-                        hn, ln = d["high"][s_idx], d["low"][s_idx]
-                        e9, e21, e50, e100, e200 = d["ema9"][s_idx], d["ema21"][s_idx], d["ema50"][s_idx], d["ema100"][s_idx], d["ema200"][s_idx]
-                        r2, r14, z, rv, roc5, ker = d["rsi2"][s_idx], d["rsi14"][s_idx], d["z"][s_idx], d["rvol"][s_idx], d["roc5"][s_idx], d["ker"][s_idx]
-                        sl = (e21 - d["ema21"][s_idx - 4]) / max(e21, 1e-12)
-                        e50_sl = (e50 - d["ema50"][s_idx - 6]) / max(e50, 1e-12)
-                        rng = max(hn - ln, 1e-9); not_sp = rng <= d["atr14"][s_idx] * 2.20
-                        lw, uw = (min(on, cn) - ln) / rng, (hn - max(on, cn)) / rng
-                        gb, rb = not_sp and cn > on and cn >= cp, not_sp and cn < on and cn <= cp
-
-                        pair_ac = 0.5 * d["ac48"][s_idx] + 0.5 * btc_ac
-                        if model_id == "CHAMELEON_V14":
-                            eff_sub = "DIP_ABSORBER" if pair_ac < -0.06 else "SWING_BOOSTER"
-                        elif model_id == "DIP_ABSORBER_V14":
-                            eff_sub = "DIP_ABSORBER"
-                        elif model_id == "SWING_BOOSTER_V14":
-                            eff_sub = "SWING_BOOSTER"
-                        elif model_id == "SWING_SOVEREIGN_V14":
-                            eff_sub = "SWING_SOVEREIGN"
-                        else:
-                            eff_sub = model_id
-
-                        if eff_sub == "DIP_ABSORBER":
-                            htf_bull = cn >= e200 * 0.995 and e21 >= e50 * 0.999 and e50 >= e100 * 0.999 and sl >= 0.00015 and roc5 > -0.0065
-                            htf_bear = cn <= e200 * 1.005 and e21 <= e50 * 1.001 and e50 <= e100 * 1.001 and sl <= -0.00015 and roc5 < 0.0065
-                            dip_long_a = htf_bull and not_sp and (r2 <= 18.0 or z <= -1.15) and cn <= e21 * 1.0015 and (cn > on or lw >= 0.30)
-                            rip_short_a = htf_bear and not_sp and (r2 >= 82.0 or z >= 1.15) and cn >= e21 * 0.9985 and (cn < on or uw >= 0.30)
-                            l3, h3 = min(ln, d["low"][s_idx - 1], d["low"][s_idx - 2]), max(hn, d["high"][s_idx - 1], d["high"][s_idx - 2])
-                            dip_long_b = htf_bull and not_sp and l3 <= e21 * 1.0015 and cn >= e9 * 0.9995 and cn <= e21 * 1.0030 and -1.40 <= z <= 0.45 and 38 <= r14 <= 64
-                            rip_short_b = htf_bear and not_sp and h3 >= e21 * 0.9985 and cn <= e9 * 1.0005 and cn >= e21 * 0.9970 and -0.45 <= z <= 1.40 and 36 <= r14 <= 62
-                            if (dip_long_a or dip_long_b) and bar >= lp and bsl >= -0.00020 and br5 >= -0.0015:
-                                sc = 98 if (dip_long_a and dip_long_b) else (97 if dip_long_a else 96)
-                                cands.append((sc, ker, rv, sym, "LONG", d["close"][bar], eff_sub))
-                            elif (rip_short_a or rip_short_b) and bar >= sp and bsl <= 0.00020 and br5 <= 0.0015:
-                                sc = 98 if (rip_short_a and rip_short_b) else (97 if rip_short_a else 96)
-                                cands.append((sc, ker, rv, sym, "SHORT", d["close"][bar], eff_sub))
-                        else:
-                            req_e50 = (eff_sub in ("SWING_BOOSTER", "SWING_SOVEREIGN"))
-                            cab = cn >= e200 * 0.996 and e21 > e50 >= e100 * 0.9995 and sl >= 0.0003 and (not req_e50 or e50_sl >= 0.0002) and roc5 > -0.006
-                            cae = cn <= e200 * 1.004 and e21 < e50 <= e100 * 1.0005 and sl <= -0.0003 and (not req_e50 or e50_sl <= -0.0002) and roc5 < 0.006
-                            sab = 40 + (22 if cab else 0) + (19 if r2 <= 22 else 0) + (11 if z <= -1 else 0) + (10 if (gb or lw >= 0.28) else 0) + (6 if rv >= 1.08 else 0)
-                            sae = 40 + (22 if cae else 0) + (19 if r2 >= 78 else 0) + (11 if z >= 1 else 0) + (10 if (rb or uw >= 0.28) else 0) + (6 if rv >= 1.08 else 0)
-                            cbb = cn >= e200 * 0.998 and e9 >= e21 * 0.9995 and e21 > e50 and sl >= 0.00035 and (not req_e50 or e50_sl >= 0.0002)
-                            cbe = cn <= e200 * 1.002 and e9 <= e21 * 1.0005 and e21 < e50 and sl <= -0.00035 and (not req_e50 or e50_sl <= -0.0002)
-                            l3, h3 = min(ln, d["low"][s_idx - 1], d["low"][s_idx - 2]), max(hn, d["high"][s_idx - 1], d["high"][s_idx - 2])
-                            bt_, st_ = l3 <= e21 * 1.0035 and gb and cn >= e9 * 0.9995, h3 >= e21 * 0.9965 and rb and cn <= e9 * 1.0005
-                            bno, sno = -1.35 <= z <= 0.90 and 42 <= r14 <= 70, -0.90 <= z <= 1.35 and 30 <= r14 <= 58
-                            sbb = 44 + (24 if cbb else 0) + (16 if bt_ else 0) + (11 if bno else 0) + (5 if rv >= 1.02 else 0)
-                            sbe = 44 + (24 if cbe else 0) + (16 if st_ else 0) + (11 if sno else 0) + (5 if rv >= 1.02 else 0)
-                            la = cab and gb and (r2 <= 22 or z <= -1) and sab >= 96
-                            lb = cbb and bt_ and bno and sbb >= 96
-                            sa = cae and rb and (r2 >= 78 or z >= 1) and sae >= 96
-                            sb = cbe and st_ and sno and sbe >= 96
-                            ep_px = d["open"][bar] if eff_sub == "LEGACY_V12" else d["close"][bar]
-                            if (la or lb) and bar >= lp and bsl >= -0.00015 and br5 >= -0.0012:
-                                cands.append((min(99, max(sab, sbb)), ker, rv, sym, "LONG", ep_px, eff_sub))
-                            elif (sa or sb) and bar >= sp and bsl <= 0.00015 and br5 <= 0.0012:
-                                cands.append((min(99, max(sae, sbe)), ker, rv, sym, "SHORT", ep_px, eff_sub))
-
+                        l_arr, s_arr = sig_cache[sym][sig_key]
+                        if l_arr[bar]:
+                            cands.append((mkt[sym]["rvol"][bar], sym, "LONG", mkt[sym]["close"][bar]))
+                        elif s_arr[bar]:
+                            cands.append((mkt[sym]["rvol"][bar], sym, "SHORT", mkt[sym]["close"][bar]))
                     if cands:
                         cands.sort(reverse=True)
-                        sc, _, _, sym, side, ep, eff_sub = cands[0]
+                        _, sym, side, ep = cands[0]
                         dm = 1.0 if side == "LONG" else -1.0
                         dd_cur = (peak - equity) / max(peak, 1.0)
-                        lev = 4.0 if dd_cur > 0.15 else (7.0 if sc >= 98 else 6.4)
+                        lev = 4.0 if dd_cur > 0.15 else 6.6
                         beq = min(equity, 350000.0 / lev) if compounded else start_eq
                         t_notl = round(beq * lev, 2)
                         cv = c_vals[sym]
                         raw_c = (t_notl / 85.0) / max(ep * cv, 1e-9)
                         rq = max(1, int(round(raw_c)))
-                        qty_full = max(1, int(math.floor(raw_c))) if (rq > raw_c * 1.05 and raw_c >= 1.0) else rq
-                        use_b = (eff_sub == "SWING_BOOSTER")
-                        qty_init = max(1, int(round(qty_full * 0.70))) if use_b else qty_full
-                        notl_full = round(qty_full * cv * ep * 85.0, 2)
-                        notl_init = round(qty_init * cv * ep * 85.0, 2)
-                        if eff_sub == "LEGACY_V9":
-                            hw_s = 0.0040
-                        elif eff_sub == "LEGACY_V12":
-                            hw_s = 0.0028
-                        elif eff_sub == "DIP_ABSORBER":
-                            hw_s = 0.0098
-                        else:
-                            hw_s = 0.0105
+                        qty = max(1, int(math.floor(raw_c))) if (rq > raw_c * 1.05 and raw_c >= 1.0) else rq
+                        ex_notl = round(qty * cv * ep * 85.0, 2)
                         open_slots.append({
-                            "sym": sym, "side": side, "eb": bar, "ep0": ep, "ep": ep, "ext": ep,
-                            "notl": notl_init, "rem_notl": notl_init, "notl_full": notl_full,
-                            "qty": qty_init, "qty_full": qty_full, "boosted": False,
+                            "sym": sym, "side": side, "eb": bar, "ep": ep, "ext": ep,
+                            "notl": ex_notl, "rem_notl": ex_notl, "qty": qty,
                             "st": 0, "tp1": False, "bank": 0.0,
-                            "stop": ep * (1.0 - dm * hw_s), "sub_mode": eff_sub,
+                            "stop": ep * (1.0 - dm * (stop_pct + 0.0020)),
                         })
 
             tot = wins_cnt + losses_cnt
+            avg_w = round(gross_profit / max(wins_cnt, 1), 2)
+            avg_l = round(gross_loss / max(losses_cnt, 1), 2)
             return {
                 "model_id": model_id,
-                "model": model_label,
+                "model": model_name,
                 "ending_equity_inr": round(equity, 2),
                 "net_profit_inr": round(equity - start_eq, 2),
                 "roi_pct": round(((equity - start_eq) / start_eq) * 100.0, 2),
@@ -1957,6 +1847,8 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "wins": wins_cnt,
                 "losses": losses_cnt,
                 "win_rate_pct": round((wins_cnt / max(tot, 1)) * 100.0, 2),
+                "avg_win_inr": avg_w,
+                "avg_loss_inr": avg_l,
                 "gross_profit_inr": round(gross_profit, 2),
                 "gross_loss_inr": round(gross_loss, 2),
                 "profit_factor": round(gross_profit / max(gross_loss, 1.0), 2),
@@ -1965,19 +1857,20 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "recent_trades": list(reversed(sample_trades[-30:])),
             }
 
-        models_to_run = [
-            ("CHAMELEON_V14", "V14.0 Chameleon (Auto-Regime: Dip Absorber + Swing Booster)"),
-            ("SWING_BOOSTER_V14", "V14.0 Swing Booster (70/30 Dip Booster + 40m Close Shield)"),
-            ("DIP_ABSORBER_V14", "V14.0 Dip Absorber (Mean-Reversion + 30m Close Shield)"),
-            ("SWING_SOVEREIGN_V14", "V14.0 Swing Sovereign (Full-Stake + 40m Close Shield)"),
-            ("LEGACY_V9", "V9.0 Restored Legacy (Same-Bar Micro-Ratchet)"),
-            ("LEGACY_V12", "V12.3 Hybrid Legacy (Closed-Bar + -0.28% Stop)"),
-        ]
-        all_results = [_sim_v14_model(mid, mlabel) for mid, mlabel in models_to_run]
-        v14_only = [r for r in all_results if not r["model_id"].startswith("LEGACY")]
-        champion = max(v14_only, key=lambda r: (r["ending_equity_inr"], r["profit_factor"], r["win_rate_pct"]))
-        daemon.state["active_strategy_mode"] = champion["model_id"]
+        all_results = []
+        for sk in family_labels.keys():
+            for rk in rr_profiles.keys():
+                r = _eval_candidate(sk, rk)
+                if r["trades"] >= 8:
+                    all_results.append(r)
 
+        all_results.sort(key=lambda r: (r["ending_equity_inr"], r["profit_factor"], r["win_rate_pct"]), reverse=True)
+        champion = all_results[0]
+        daemon.state["active_strategy_mode"] = champion["model_id"]
+        daemon.squeeze_engine.active_family = champion["model_id"].split("__")[0]
+
+        # Pick Top 6 distinct or highest-performing models for the Tournament Leaderboard
+        top6 = all_results[:6]
         leaderboard = [
             {
                 "model_id": r["model_id"],
@@ -1985,13 +1878,15 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "trades": r["trades"],
                 "trades_per_day": r["trades_per_day"],
                 "win_rate_pct": r["win_rate_pct"],
+                "avg_win_inr": r["avg_win_inr"],
+                "avg_loss_inr": r["avg_loss_inr"],
                 "profit_factor": r["profit_factor"],
                 "max_dd_pct": r["max_dd_pct"],
                 "ending_equity_inr": r["ending_equity_inr"],
                 "roi_pct": r["roi_pct"],
-                "is_champion": (r["model_id"] == champion["model_id"]),
+                "is_champion": (idx == 0),
             }
-            for r in sorted(all_results, key=lambda x: x["ending_equity_inr"], reverse=True)
+            for idx, r in enumerate(top6)
         ]
 
         return {

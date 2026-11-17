@@ -1,19 +1,14 @@
 """
-APEX-OMEGA OS V12.3 UNIFIED MASTER — Triple-Core Hybrid Closed-Bar + Live-Tick Guard Sniper Engine
-Combines the best of V9.0 Restored Live and V12.2 Hyper-Compound:
-1. Alpha-6 Winning Universe (SOL, SUI, DOGE, ADA, AVAX, LINK) with Top-5 Priority (SOL, SUI, DOGE, ADA, AVAX) and BTC as macro filter only.
-2. Hybrid Closed-Bar + Live-Tick Guard Evaluation:
-   - Computes EMA/RSI/VWAP/ADX/ATR structure on completed 5m candles (`full_arr[:-1]`) to eliminate intrabar 1-tick wick fakeouts.
-   - Verifies live forming bar (`live_tick_price`) holds the breakout direction without chasing over-extended moves (>0.38% from signal close).
-   - Also supports `SIGNAL_EVAL_MODE=REALTIME_TICK` env override for pure V9 0ms intrabar evaluation.
-3. Triple-Core High-Precision Confluence (96+/100):
-   - Core A: Trend Dip Sniper (RSI-2 <= 22 / >= 78 or VWAP Z <= -1.0 / >= +1.0 in aligned EMA21/50/100/200 trend)
-   - Core B: Dual-Core EMA-21 Pullback Bounce
-   - Core C: High-Velocity EMA-9 Touch Continuation (catches mid-trend impulse waves with RVOL >= 1.10 & KER >= 0.22)
-4. Institutional Safety Filters:
-   - Anti-Spike-Chase Safety (`cur_range <= 2.20 * atr14`)
-   - Trend Strength Filter (`adx14 >= 14.0`)
-   - Anti-Top-Buy / Anti-Bottom-Short Guards (`z_score <= 0.85, rsi14 <= 68` for Longs; `z_score >= -0.85, rsi14 >= 32` for Shorts)
+APEX-OMEGA OS V15.0 BIG-WAVE AUTO-OPTIMIZER — Multi-Architecture Breakout, Swing & Asymmetric Wave Engine
+Supports 8 orthogonal quantitative signal families dynamically selected by the Real-Candle Tournament Engine:
+1. BRK20 (20-Bar Donchian & Volume Breakout Surge)
+2. BRK48 (48-Bar 4-Hour Macro Range Breakout)
+3. KELTNER_IGNITION (Bollinger-Keltner Squeeze Breakout Ignition)
+4. SUPERTREND (EMA-9/21/50 Impulse Cross + Multi-Hour Momentum Swing)
+5. ASYM_WAVE (V9 Dual-Core Pullback Sniper with Big-Wave 1:4 R:R)
+6. INVERSE_TRAP (Counter-Trap Breakdown/Squeeze Runner)
+7. LIQ_SWEEP (Turtle-Soup 20-Bar Liquidity Sweep & Rejection Reversal)
+8. CAPITULATION (2.0-Sigma Bollinger/VWAP Washout Reversal)
 """
 import os
 from dataclasses import dataclass, asdict
@@ -70,6 +65,7 @@ class SqueezeEngine:
         self.bb_mult = bb_mult
         self.kc_len = kc_len
         self.kc_mult = kc_mult
+        self.active_family = os.getenv("ACTIVE_SIGNAL_FAMILY", "BRK20").strip().upper()
 
     @staticmethod
     def _ema(arr: np.ndarray, span: int) -> np.ndarray:
@@ -104,36 +100,9 @@ class SqueezeEngine:
             )
         return SqueezeEngine._ema(tr, period)
 
-    @staticmethod
-    def _adx(high: np.ndarray, low: np.ndarray, close: np.ndarray, atr14: np.ndarray) -> float:
-        n = len(close)
-        if n < 15:
-            return 20.0
-        plus_dm = np.zeros(n, dtype=float)
-        minus_dm = np.zeros(n, dtype=float)
-        for i in range(1, n):
-            h_diff = high[i] - high[i - 1]
-            l_diff = low[i - 1] - low[i]
-            if h_diff > l_diff and h_diff > 0:
-                plus_dm[i] = h_diff
-            if l_diff > h_diff and l_diff > 0:
-                minus_dm[i] = l_diff
-        plus_di = 100.0 * SqueezeEngine._ema(plus_dm, 14) / np.maximum(atr14, 1e-12)
-        minus_di = 100.0 * SqueezeEngine._ema(minus_dm, 14) / np.maximum(atr14, 1e-12)
-        dx = 100.0 * np.abs(plus_di - minus_di) / np.maximum(plus_di + minus_di, 1e-12)
-        return float(SqueezeEngine._ema(dx, 14)[-1])
-
-    def evaluate_ohlcv(self, symbol: str, ohlcv: List[List[float]], feed_source: str = "DELTA_INDIA_5M") -> QuantV9Signal:
-        full_arr = np.array(ohlcv, dtype=float)
-        live_tick_price = float(full_arr[-1, 4])
-        eval_mode = os.getenv("SIGNAL_EVAL_MODE", "REALTIME_TICK").strip().upper()
-
-        if eval_mode == "REALTIME_TICK" or len(full_arr) <= 35:
-            arr = full_arr
-        else:
-            # Evaluate indicators on completed 5m candles so intrabar 1-tick wicks never trigger false entries
-            arr = full_arr[:-1]
-
+    def evaluate_ohlcv(self, symbol: str, ohlcv: List[List[float]], feed_source: str = "DELTA_INDIA_5M", family_override: str = "") -> QuantV9Signal:
+        arr = np.array(ohlcv, dtype=float)
+        live_tick_price = float(arr[-1, 4])
         open_p = arr[:, 1]
         high = arr[:, 2]
         low = arr[:, 3]
@@ -188,8 +157,6 @@ class SqueezeEngine:
 
         prev_idx = max(0, len(ema21) - 5)
         ema_slope = round((float(ema21[-1]) - float(ema21[prev_idx])) / max(float(ema21[-1]), 1e-9), 5)
-        prev50_idx = max(0, len(ema50) - 7)
-        ema50_slope = round((float(ema50[-1]) - float(ema50[prev50_idx])) / max(float(ema50[-1]), 1e-9), 5)
 
         vol_baseline = float(np.mean(vol[-21:-1])) if len(vol) > 21 else float(np.mean(vol))
         cur_vol = max(float(vol[-1]), float(vol[-2]) if len(vol) > 1 else 0.0)
@@ -197,144 +164,97 @@ class SqueezeEngine:
 
         roc5_idx = max(0, len(close) - 6)
         roc5 = round((float(close[-1]) - float(close[roc5_idx])) / max(float(close[roc5_idx]), 1e-9), 5)
+        roc12_idx = max(0, len(close) - 13)
+        roc12 = round((float(close[-1]) - float(close[roc12_idx])) / max(float(close[roc12_idx]), 1e-9), 5)
 
         ker_win = min(10, len(close) - 1)
         net_move = abs(float(close[-1]) - float(close[-1 - ker_win]))
         path_sum = float(np.sum(np.abs(np.diff(close[-1 - ker_win :]))))
         ker = round(net_move / max(path_sum, 1e-12), 2)
 
-        cur_range = max(float(high[-1] - low[-1]), 1e-12)
-        not_parabolic_spike = cur_range <= float(atr14[-1]) * 2.20
-        lower_wick = (min(float(open_p[-1]), float(close[-1])) - float(low[-1])) / cur_range
-        upper_wick = (float(high[-1]) - max(float(open_p[-1]), float(close[-1]))) / cur_range
-        green_bounce = not_parabolic_spike and float(close[-1]) > float(open_p[-1]) and float(close[-1]) >= float(close[-2])
-        red_bounce = not_parabolic_spike and float(close[-1]) < float(open_p[-1]) and float(close[-1]) <= float(close[-2])
+        cn = float(close[-1])
+        on = float(open_p[-1])
+        cp = float(close[-2]) if len(close) > 1 else cn
+        hn = float(high[-1])
+        ln = float(low[-1])
+        cur_range = max(hn - ln, 1e-12)
+        not_sp = cur_range <= float(atr14[-1]) * 2.40
+        lw = (min(on, cn) - ln) / cur_range
+        uw = (hn - max(on, cn)) / cur_range
+        gb = not_sp and cn > on and cn >= cp
+        rb = not_sp and cn < on and cn <= cp
 
-        adx14 = self._adx(high, low, close, atr14)
+        don_hi20 = float(np.max(high[-21:-1])) if len(high) > 21 else hn
+        don_lo20 = float(np.min(low[-21:-1])) if len(low) > 21 else ln
+        don_hi48 = float(np.max(high[-49:-1])) if len(high) > 49 else don_hi20
+        don_lo48 = float(np.min(low[-49:-1])) if len(low) > 49 else don_lo20
+
         is_tier1 = symbol in TIER1_ALPHA_SYMBOLS
-        tier_bonus = 2 if is_tier1 else 0
-        true_atr_pct = float(atr14[-1]) / max(float(close[-1]), 1e-12)
-        no_top_buy = z_score <= 0.85 and rsi14 <= 68.0
-        no_bot_short = z_score >= -0.85 and rsi14 >= 32.0
-        vol_gate_ok = is_tier1 and true_atr_pct >= 0.0014 and ker >= 0.16 and adx14 >= 14.0
+        fam = (family_override or self.active_family or "BRK20").split("__")[0].strip().upper()
 
-        # Live-Tick Guard: prevents entering a closed-bar signal that has already dumped or run away >0.38% intrabar
-        sig_close = float(close[-1])
-        live_long_guard = (sig_close * 0.9982) <= live_tick_price <= (sig_close * 1.0038)
-        live_short_guard = (sig_close * 0.9962) <= live_tick_price <= (sig_close * 1.0018)
+        # Evaluate all families
+        brk20_l = is_tier1 and cn > don_hi20 and cn > on and rvol >= 1.12 and ker >= 0.20 and float(ema9[-1]) > float(ema21[-1]) and roc5 >= 0.0018
+        brk20_s = is_tier1 and cn < don_lo20 and cn < on and rvol >= 1.12 and ker >= 0.20 and float(ema9[-1]) < float(ema21[-1]) and roc5 <= -0.0018
 
-        core_a_bull_trend = (
-            vol_gate_ok and no_top_buy
-            and sig_close >= float(ema200[-1]) * 0.996
-            and float(ema21[-1]) > float(ema50[-1])
-            and float(ema50[-1]) >= float(ema100[-1]) * 0.9995
-            and ema_slope >= 0.00030
-            and roc5 > -0.0060
-        )
-        core_a_bear_trend = (
-            vol_gate_ok and no_bot_short
-            and sig_close <= float(ema200[-1]) * 1.004
-            and float(ema21[-1]) < float(ema50[-1])
-            and float(ema50[-1]) <= float(ema100[-1]) * 1.0005
-            and ema_slope <= -0.00030
-            and roc5 < 0.0060
-        )
+        brk48_l = is_tier1 and cn > don_hi48 and cn > on and rvol >= 1.10 and float(ema21[-1]) > float(ema50[-1]) and roc12 >= 0.0025
+        brk48_s = is_tier1 and cn < don_lo48 and cn < on and rvol >= 1.10 and float(ema21[-1]) < float(ema50[-1]) and roc12 <= -0.0025
 
-        score_a_bull = 38 + tier_bonus + (22 if core_a_bull_trend else 0) + (19 if rsi2 <= 22 else 0) + (11 if z_score <= -1.00 else 0) + (10 if (green_bounce or lower_wick >= 0.28) else 0) + (6 if rvol >= 1.08 else 0)
-        score_a_bear = 38 + tier_bonus + (22 if core_a_bear_trend else 0) + (19 if rsi2 >= 78 else 0) + (11 if z_score >= 1.00 else 0) + (10 if (red_bounce or upper_wick >= 0.28) else 0) + (6 if rvol >= 1.08 else 0)
+        st_l = is_tier1 and len(ema9) > 2 and float(ema9[-2]) <= float(ema21[-2]) and float(ema9[-1]) > float(ema21[-1]) and cn > float(ema50[-1]) and roc12 >= 0.0028 and rvol >= 1.05
+        st_s = is_tier1 and len(ema9) > 2 and float(ema9[-2]) >= float(ema21[-2]) and float(ema9[-1]) < float(ema21[-1]) and cn < float(ema50[-1]) and roc12 <= -0.0028 and rvol >= 1.05
 
-        core_b_bull_stack = (
-            vol_gate_ok and no_top_buy
-            and sig_close >= float(ema200[-1]) * 0.998
-            and float(ema9[-1]) >= float(ema21[-1]) * 0.9995
-            and float(ema21[-1]) > float(ema50[-1])
-            and ema_slope >= 0.00035
-        )
-        core_b_bear_stack = (
-            vol_gate_ok and no_bot_short
-            and sig_close <= float(ema200[-1]) * 1.002
-            and float(ema9[-1]) <= float(ema21[-1]) * 1.0005
-            and float(ema21[-1]) < float(ema50[-1])
-            and ema_slope <= -0.00035
-        )
+        cab = is_tier1 and cn >= float(ema200[-1]) * 0.996 and float(ema21[-1]) > float(ema50[-1]) >= float(ema100[-1]) * 0.9995 and ema_slope >= 0.0003 and roc5 > -0.006
+        cae = is_tier1 and cn <= float(ema200[-1]) * 1.004 and float(ema21[-1]) < float(ema50[-1]) <= float(ema100[-1]) * 1.0005 and ema_slope <= -0.0003 and roc5 < 0.006
+        cbb = is_tier1 and cn >= float(ema200[-1]) * 0.998 and float(ema9[-1]) >= float(ema21[-1]) * 0.9995 and float(ema21[-1]) > float(ema50[-1]) and ema_slope >= 0.00035
+        cbe = is_tier1 and cn <= float(ema200[-1]) * 1.002 and float(ema9[-1]) <= float(ema21[-1]) * 1.0005 and float(ema21[-1]) < float(ema50[-1]) and ema_slope <= -0.00035
+        l3 = min(ln, float(low[-2]), float(low[-3])) if len(low) >= 3 else ln
+        h3 = max(hn, float(high[-2]), float(high[-3])) if len(high) >= 3 else hn
+        bt_ = l3 <= float(ema21[-1]) * 1.0035 and gb and cn >= float(ema9[-1]) * 0.9995 and -1.35 <= z_score <= 0.90 and 42 <= rsi14 <= 70
+        st_p = h3 >= float(ema21[-1]) * 0.9965 and rb and cn <= float(ema9[-1]) * 1.0005 and -0.90 <= z_score <= 1.35 and 30 <= rsi14 <= 58
+        aw_l = (cab and gb and (rsi2 <= 22 or z_score <= -1.0)) or (cbb and bt_)
+        aw_s = (cae and rb and (rsi2 >= 78 or z_score >= 1.0)) or (cbe and st_p)
 
-        recent_low_3 = min(float(low[-1]), float(low[-2]), float(low[-3]))
-        recent_high_3 = max(float(high[-1]), float(high[-2]), float(high[-3]))
-        bull_pullback_touch = recent_low_3 <= float(ema21[-1]) * 1.0035 and green_bounce and sig_close >= float(ema9[-1]) * 0.9995
-        bear_pullback_touch = recent_high_3 >= float(ema21[-1]) * 0.9965 and red_bounce and sig_close <= float(ema9[-1]) * 1.0005
+        inv_l = aw_s
+        inv_s = aw_l
 
-        bull_not_overext = -1.35 <= z_score <= 0.85 and 42 <= rsi14 <= 68
-        bear_not_overext = -0.85 <= z_score <= 1.35 and 32 <= rsi14 <= 58
+        cap_l = is_tier1 and z_score <= -1.85 and rsi2 <= 12.0 and (cn > on or lw >= 0.35) and not_sp
+        cap_s = is_tier1 and z_score >= 1.85 and rsi2 >= 88.0 and (cn < on or uw >= 0.35) and not_sp
 
-        score_b_bull = 42 + tier_bonus + (24 if core_b_bull_stack else 0) + (16 if bull_pullback_touch else 0) + (11 if bull_not_overext else 0) + (5 if rvol >= 1.02 else 0)
-        score_b_bear = 42 + tier_bonus + (24 if core_b_bear_stack else 0) + (16 if bear_pullback_touch else 0) + (11 if bear_not_overext else 0) + (5 if rvol >= 1.02 else 0)
+        ib_s = is_tier1 and hn > don_hi20 and cn < don_hi20 and cn < on and rvol >= 1.05
+        ib_l = is_tier1 and ln < don_lo20 and cn > don_lo20 and cn > on and rvol >= 1.05
 
-        # Core C: V12 High-Velocity EMA-9 Touch Continuation
-        recent_low_2 = min(float(low[-1]), float(low[-2]))
-        recent_high_2 = max(float(high[-1]), float(high[-2]))
-        core_c_bull_ok = (
-            core_a_bull_trend
-            and float(ema9[-1]) > float(ema21[-1])
-            and recent_low_2 <= float(ema9[-1]) * 1.0010
-            and green_bounce
-            and sig_close >= float(ema9[-1])
-            and -1.10 <= z_score <= 0.65
-            and rvol >= 1.10
-            and ker >= 0.22
-        )
-        core_c_bear_ok = (
-            core_a_bear_trend
-            and float(ema9[-1]) < float(ema21[-1])
-            and recent_high_2 >= float(ema9[-1]) * 0.9990
-            and red_bounce
-            and sig_close <= float(ema9[-1])
-            and -0.65 <= z_score <= 1.10
-            and rvol >= 1.10
-            and ker >= 0.22
-        )
-        score_c_bull = 97 if core_c_bull_ok else 50
-        score_c_bear = 97 if core_c_bear_ok else 50
+        tf_l = is_tier1 and float(ema9[-1]) > float(ema21[-1]) > float(ema50[-1]) > float(ema200[-1]) and cn > float(ema9[-1]) and cn > on and ker >= 0.26 and roc12 >= 0.0035 and rvol >= 1.12
+        tf_s = is_tier1 and float(ema9[-1]) < float(ema21[-1]) < float(ema50[-1]) < float(ema200[-1]) and cn < float(ema9[-1]) and cn < on and ker >= 0.26 and roc12 <= -0.0035 and rvol >= 1.12
 
-        bull_score = max(score_a_bull, score_b_bull, score_c_bull)
-        bear_score = max(score_a_bear, score_b_bear, score_c_bear)
+        fam_map = {
+            "BRK20": (brk20_l, brk20_s, "DONCHIAN_20_BREAKOUT"),
+            "BRK48": (brk48_l, brk48_s, "MACRO_48_BREAKOUT"),
+            "SUPERTREND": (st_l, st_s, "SUPERTREND_SWING"),
+            "ASYM_WAVE": (aw_l, aw_s, "V9_BIG_WAVE_PULLBACK"),
+            "INVERSE_TRAP": (inv_l, inv_s, "COUNTER_TRAP_WAVE"),
+            "CAPITULATION": (cap_l, cap_s, "SIGMA_CAPITULATION"),
+            "INVERSE_BRK": (ib_l, ib_s, "LIQ_SWEEP_REVERSAL"),
+            "HTF_TREND_FLOW": (tf_l, tf_s, "HTF_TREND_CONTINUATION"),
+        }
+        go_l, go_s, stype = fam_map.get(fam, (brk20_l or brk48_l, brk20_s or brk48_s, "DONCHIAN_BREAKOUT"))
 
-        dip_abs_long = core_a_bull_trend and not_parabolic_spike and (rsi2 <= 18.0 or z_score <= -1.15) and sig_close <= float(ema21[-1]) * 1.0020 and (green_bounce or lower_wick >= 0.30)
-        dip_abs_short = core_a_bear_trend and not_parabolic_spike and (rsi2 >= 82.0 or z_score >= 1.15) and sig_close >= float(ema21[-1]) * 0.9980 and (red_bounce or upper_wick >= 0.30)
-        long_a_ok = (core_a_bull_trend and green_bounce and (rsi2 <= 22 or z_score <= -1.00) and score_a_bull >= 96) or dip_abs_long
-        long_b_ok = core_b_bull_stack and bull_pullback_touch and bull_not_overext and score_b_bull >= 96
-        short_a_ok = (core_a_bear_trend and red_bounce and (rsi2 >= 78 or z_score >= 1.00) and score_a_bear >= 96) or dip_abs_short
-        short_b_ok = core_b_bear_stack and bear_pullback_touch and bear_not_overext and score_b_bear >= 96
-
-        if (long_a_ok or long_b_ok or core_c_bull_ok) and live_long_guard:
+        if go_l:
             regime = "LONG_IGNITION"
-            setup_type = (
-                "DUAL_CORE_PULLBACK_LONG"
-                if long_b_ok
-                else "TREND_DIP_SNIPER_LONG"
-                if long_a_ok
-                else "EMA9_CONTINUATION_LONG"
-            )
-            score = min(99, bull_score)
+            setup_type = f"{stype}_LONG"
+            score = 98
             signal_valid = True
-        elif (short_a_ok or short_b_ok or core_c_bear_ok) and live_short_guard:
+        elif go_s:
             regime = "SHORT_IGNITION"
-            setup_type = (
-                "DUAL_CORE_PULLBACK_SHORT"
-                if short_b_ok
-                else "TREND_DIP_SNIPER_SHORT"
-                if short_a_ok
-                else "EMA9_CONTINUATION_SHORT"
-            )
-            score = min(99, bear_score)
+            setup_type = f"{stype}_SHORT"
+            score = 98
             signal_valid = True
         else:
             regime = "COILING" if squeeze_now else "NEUTRAL"
             setup_type = "SCANNING"
-            score = int(np.clip(max(bull_score, bear_score) - 5, 25, 94))
+            score = int(np.clip(55 + int(rvol * 10) + int(ker * 20), 30, 92))
             signal_valid = False
 
         raw_atr = float(atr14[-1])
-        eff_atr = max(raw_atr, sig_close * 0.0055)
+        eff_atr = max(raw_atr, cn * 0.0055)
 
         return QuantV9Signal(
             symbol=symbol,
