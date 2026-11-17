@@ -251,7 +251,14 @@ class SqueezeEngine:
         tf_l = is_tier1 and float(ema9[-1]) > float(ema21[-1]) > float(ema50[-1]) > float(ema200[-1]) and cn > float(ema9[-1]) and cn > on and ker >= 0.26 and roc12 >= 0.0035 and rvol >= 1.12
         tf_s = is_tier1 and float(ema9[-1]) < float(ema21[-1]) < float(ema50[-1]) < float(ema200[-1]) and cn < float(ema9[-1]) and cn < on and ker >= 0.26 and roc12 <= -0.0035 and rvol >= 1.12
 
+        capo_l = is_tier1 and z_score <= -1.95 and rsi2 <= 12.0 and ((cn > on and cn >= cp) or (lw >= 0.44 and cn >= on)) and not_sp
+        capo_s = is_tier1 and z_score >= 1.95 and rsi2 >= 88.0 and ((cn < on and cn <= cp) or (uw >= 0.44 and cn <= on)) and not_sp
+        cham_l = (brk48_l or brk96_l) if (ker >= 0.25 and abs(roc12) >= 0.0028) else (capo_l or inv_l)
+        cham_s = (brk48_s or brk96_s) if (ker >= 0.25 and abs(roc12) >= 0.0028) else (capo_s or inv_s)
+
         fam_map = {
+            "CAP_OMEGA": (capo_l, capo_s, "SIGMA21_CONFIRMED_SNIPER"),
+            "REGIME_CHAMELEON": (cham_l, cham_s, "DUAL_REGIME_CHAMELEON"),
             "INVERSE_TRAP": (inv_l, inv_s, "COUNTER_TRAP_SQUEEZE"),
             "INVERSE_SNIPER": (invs_l, invs_s, "COUNTER_TRAP_SNIPER"),
             "CAPITULATION": (cap_l, cap_s, "SIGMA20_CAPITULATION"),

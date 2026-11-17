@@ -1193,7 +1193,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
 async def serve_visual_dashboard() -> HTMLResponse:
     if DASHBOARD_HTML_PATH.exists():
         return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
-    return HTMLResponse(content="<h1>APEX-OMEGA V16.0 SOVEREIGN ALPHA ALLOCATOR ONLINE</h1>", status_code=200)
+    return HTMLResponse(content="<h1>APEX-OMEGA V18.0 SOVEREIGN OMEGA ONLINE</h1>", status_code=200)
 
 
 @app.get("/health")
@@ -1628,7 +1628,7 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "don_hi96": don_hi96, "don_lo96": don_lo96,
             }
 
-        # Precompute all 12 Strategy Families across all pairs
+        # Precompute all 14 Strategy Families across all pairs (V18.0 Sovereign Omega)
         sig_cache = {}
         for sym in u_set:
             if sym not in mkt:
@@ -1646,6 +1646,8 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
             e21_4 = np.roll(e21, 4)
             sl = (e21 - e21_4) / np.maximum(e21, 1e-12)
             r2, r14, z, rv, roc5, roc12, ker = d["rsi2"], d["rsi14"], d["z"], d["rvol"], d["roc5"], d["roc12"], d["ker"]
+            z_prev = np.roll(z, 1); z_prev[0] = 0.0
+            r2_prev = np.roll(r2, 1); r2_prev[0] = 50.0
             rng = np.maximum(hn - ln, 1e-9)
             not_sp = rng <= d["atr14"] * 2.40
             lw = (np.minimum(on, cn) - ln) / rng
@@ -1688,11 +1690,22 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
             tf_l = (e9 > e21) & (e21 > e50) & (e50 > e200) & (cn > e9) & (cn > on) & (ker >= 0.26) & (roc12 >= 0.0035) & (rv >= 1.12)
             tf_s = (e9 < e21) & (e21 < e50) & (e50 < e200) & (cn < e9) & (cn < on) & (ker >= 0.26) & (roc12 <= -0.0035) & (rv >= 1.12)
 
+            # V18 New Family 13: CAP_OMEGA (Confirmed 2.1-Sigma Washout + Turn Candle Sniper)
+            capo_l = (((z <= -1.95) | (z_prev <= -2.05)) & ((r2 <= 12.0) | (r2_prev <= 10.0))) & (((cn > on) & (cn >= cp)) | ((lw >= 0.44) & (cn >= on))) & not_sp
+            capo_s = (((z >= 1.95) | (z_prev >= 2.05)) & ((r2 >= 88.0) | (r2_prev >= 90.0))) & (((cn < on) & (cn <= cp)) | ((uw >= 0.44) & (cn <= on))) & not_sp
+
+            # V18 New Family 14: REGIME_CHAMELEON (Breakout in High-Efficiency Trend ker>=0.25 + Capitulation/Counter-Trap in Chop)
+            is_tr = (ker >= 0.25) & (np.abs(roc12) >= 0.0028)
+            cham_l = np.where(is_tr, brk48_l | brk96_l, capo_l | inv_l)
+            cham_s = np.where(is_tr, brk48_s | brk96_s, capo_s | inv_s)
+
             sig_cache[sym] = {
                 "INVERSE_TRAP": (inv_l, inv_s),
                 "INVERSE_SNIPER": (invs_l, invs_s),
                 "CAPITULATION": (cap_l, cap_s),
                 "CAP_ULTRA": (capu_l, capu_s),
+                "CAP_OMEGA": (capo_l, capo_s),
+                "REGIME_CHAMELEON": (cham_l, cham_s),
                 "BRK48": (brk48_l, brk48_s),
                 "BRK96": (brk96_l, brk96_s),
                 "BRK20": (brk20_l, brk20_s),
@@ -1703,25 +1716,31 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "HTF_TREND_FLOW": (tf_l, tf_s),
             }
 
+        # Tuple format:
+        # (stop_pct, min_hb, s05_t, s05_l, b05_frac, s1_t, s1_l, b1_frac, s2_t, s2_l, b2_frac, s3_t, s3_l, s4_tp, label)
         rr_profiles = {
-            "PURE_WAVE_NO_S05": (0.0058, 4, 999.0, 0.0000, 0.0135, 0.0085, 0.0220, 0.0155, 0.0320, 0.0245, 0.0480, "Pure Wave No-S05"),
-            "TITAN_WIDE_1_8":   (0.0062, 4, 0.0115, 0.0040, 0.0175, 0.0110, 0.0260, 0.0185, 0.0370, 0.0280, 0.0550, "1:8 Titan Wide"),
-            "SWING_TITAN_1_6":  (0.0065, 4, 0.0095, 0.0045, 0.0150, 0.0100, 0.0225, 0.0165, 0.0320, 0.0245, 0.0460, "1:6 Macro Swing"),
+            "OMEGA_SURGE_1_7":  (0.0058, 4, 0.0068, 0.0018, 0.35, 0.0140, 0.0085, 0.20, 0.0225, 0.0160, 0.20, 0.0330, 0.0250, 0.0500, "1:7 Surge Split-Bank"),
+            "OMEGA_SPLIT_1_8":  (0.0060, 4, 0.0078, 0.0020, 0.35, 0.0155, 0.0095, 0.20, 0.0250, 0.0180, 0.20, 0.0365, 0.0280, 0.0550, "1:8 Omega Split-Bank"),
+            "TITAN_WIDE_1_8":   (0.0062, 4, 0.0115, 0.0040, 0.00, 0.0175, 0.0110, 0.00, 0.0260, 0.0185, 0.50, 0.0370, 0.0280, 0.0550, "1:8 Titan Wide"),
+            "SWING_TITAN_1_6":  (0.0065, 4, 0.0095, 0.0045, 0.00, 0.0150, 0.0100, 0.00, 0.0225, 0.0165, 0.50, 0.0320, 0.0245, 0.0460, "1:6 Macro Swing"),
+            "PURE_WAVE_NO_S05": (0.0058, 4, 999.00, 0.0000, 0.00, 0.0135, 0.0085, 0.00, 0.0220, 0.0155, 0.50, 0.0320, 0.0245, 0.0480, "Pure Wave No-S05"),
         }
 
         family_labels = {
-            "INVERSE_TRAP": "V16.0 Counter-Trap Squeeze Runner",
-            "INVERSE_SNIPER": "V16.0 Selective Counter-Trap Sniper",
-            "CAPITULATION": "V16.0 2.0-Sigma Capitulation Sniper",
-            "CAP_ULTRA": "V16.0 2.2-Sigma Ultra-Capitulation",
-            "BRK48": "V16.0 Macro 48-Bar Range Breakout",
-            "BRK96": "V16.0 Structural 96-Bar 8H Breakout",
-            "BRK20": "V16.0 Donchian 20-Bar Breakout Surge",
-            "SUPERTREND": "V16.0 Supertrend EMA-9/21/50 Swing",
-            "ASYM_WAVE": "V16.0 Dual-Core Pullback Wave",
-            "INVERSE_BRK": "V16.0 Liquidity-Sweep 20-Bar Reversal",
-            "INVERSE_BRK48": "V16.0 Liquidity-Sweep 48-Bar Reversal",
-            "HTF_TREND_FLOW": "V16.0 Multi-Hour Trend Continuation",
+            "INVERSE_TRAP": "V18.0 Counter-Trap Squeeze Runner",
+            "INVERSE_SNIPER": "V18.0 Selective Counter-Trap Sniper",
+            "CAPITULATION": "V18.0 2.0-Sigma Capitulation Sniper",
+            "CAP_ULTRA": "V18.0 2.2-Sigma Ultra-Capitulation",
+            "CAP_OMEGA": "V18.0 Confirmed 2.1-Sigma Reversal Sniper",
+            "REGIME_CHAMELEON": "V18.0 Dual-Regime Auto-Chameleon",
+            "BRK48": "V18.0 Macro 48-Bar Range Breakout",
+            "BRK96": "V18.0 Structural 96-Bar 8H Breakout",
+            "BRK20": "V18.0 Donchian 20-Bar Breakout Surge",
+            "SUPERTREND": "V18.0 Supertrend EMA-9/21/50 Swing",
+            "ASYM_WAVE": "V18.0 Dual-Core Pullback Wave",
+            "INVERSE_BRK": "V18.0 Liquidity-Sweep 20-Bar Reversal",
+            "INVERSE_BRK48": "V18.0 Liquidity-Sweep 48-Bar Reversal",
+            "HTF_TREND_FLOW": "V18.0 Multi-Hour Trend Continuation",
         }
 
         eval_start = min(205, max(105, n_bars - 10))
@@ -1741,13 +1760,26 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
             stop_ex_f = taker_f
             slip_p, slip_s = 0.00003, 0.00014
 
-        # Step 1: Discover the #1 Specialist (Family, RR_Profile) for each individual coin
+        # Step 1: Discover Top Specialists (Family, RR_Profile) for each individual coin
+        sig_idx_cache = {}
+        for sym in syms_list:
+            if sym in sig_cache:
+                sig_idx_cache[sym] = {}
+                for sk, (la, sa) in sig_cache[sym].items():
+                     raw_idx = np.flatnonzero(la | sa)
+                     sig_idx_cache[sym][sk] = raw_idx[raw_idx >= eval_start].tolist()
+
+        import bisect
         def _sim_single_coin(sym: str, sk: str, rk: str):
-            stop_pct, min_hb, s05_t, s05_l, s1_t, s1_l, s2_t, s2_l, s3_t, s3_l, s4_tp, _ = rr_profiles[rk]
+            stop_pct, min_hb, s05_t, s05_l, b05, s1_t, s1_l, b1, s2_t, s2_l, b2, s3_t, s3_l, s4_tp, _ = rr_profiles[rk]
             d = mkt[sym]; l_arr, s_arr = sig_cache[sym][sk]
+            s_idxs = sig_idx_cache[sym][sk]
+            if not s_idxs:
+                return 0.0, 0.0, 0.0, 0, 0
             c = None; cd_until, lp, sp, cl, cs, ws = -100, -1, -1, 0, 0, 1
             gp, gl, wc, lc = 0.0, 0.0, 0, 0
-            for bar in range(eval_start, n_bars):
+            bar = s_idxs[0]
+            while bar < n_bars:
                 if c is not None:
                     side = c["side"]; dm = 1.0 if side == "LONG" else -1.0
                     bo, bh, bl, bc = d["open"][bar], d["high"][bar], d["low"][bar], d["close"][bar]
@@ -1759,8 +1791,8 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                         if sh or ch:
                             is_l = (c["st"] == 0); ex_px = c["stop"] if sh else px
                             pe = dm * ((ex_px - ep) / ep) - (slip_s if is_l else slip_p)
-                            rn = c["rem_notl"] if c["tp1"] else notl
-                            pnl = (c["bank"] if c["tp1"] else 0.0) + rn * pe - rn * (ent_f + (stop_ex_f if is_l else prof_ex_f))
+                            rn = c["rem_notl"]
+                            pnl = c["bank"] + rn * pe - rn * (ent_f + (stop_ex_f if is_l else prof_ex_f))
                             if pnl > 0:
                                 wc += 1; gp += pnl; ws += 1; cd_until = bar + 4
                                 if side == "LONG": cl = 0
@@ -1775,8 +1807,8 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                                     if cs >= 2: sp = bar + 36; cs = 0
                             c = None; break
                         if (side == "LONG" and px >= tpm) or (side == "SHORT" and px <= tpm):
-                            rn = c["rem_notl"] if c["tp1"] else notl
-                            pnl = (c["bank"] if c["tp1"] else 0.0) + rn * s4_tp - rn * (ent_f + maker_f)
+                            rn = c["rem_notl"]
+                            pnl = c["bank"] + rn * s4_tp - rn * (ent_f + maker_f)
                             wc += 1; gp += pnl; ws += 1; cd_until = bar + 4
                             if side == "LONG": cl = 0
                             else: cs = 0
@@ -1784,16 +1816,23 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                         if (side == "LONG" and px > c["ext"]) or (side == "SHORT" and px < c["ext"]):
                             c["ext"] = px
                         mf = dm * ((c["ext"] - ep) / ep)
-                        if mf >= s05_t and c["st"] < 0.5: c["st"] = 0.5; c["stop"] = ep * (1.0 + dm * s05_l)
-                        if mf >= s1_t and c["st"] < 1: c["st"] = 1; c["stop"] = ep * (1.0 + dm * s1_l)
+                        if mf >= s05_t and c["st"] < 0.5:
+                            c["st"] = 0.5; c["stop"] = ep * (1.0 + dm * s05_l)
+                            if b05 > 0 and not c["b05"]:
+                                c["b05"] = True; bn = notl * b05; c["rem_notl"] -= bn; c["bank"] += bn * s05_t - bn * (ent_f + maker_f)
+                        if mf >= s1_t and c["st"] < 1:
+                            c["st"] = 1; c["stop"] = ep * (1.0 + dm * s1_l)
+                            if b1 > 0 and not c["b1"]:
+                                c["b1"] = True; bn = notl * b1; c["rem_notl"] -= bn; c["bank"] += bn * s1_t - bn * (ent_f + maker_f)
                         if mf >= s2_t and c["st"] < 2:
-                            c["st"] = 2; c["tp1"] = True; hq = max(1, int(qty * 0.50))
-                            hn = notl * (hq / qty); c["rem_notl"] = notl - hn; c["bank"] = hn * s2_t - hn * (ent_f + maker_f)
-                            c["stop"] = ep * (1.0 + dm * s2_l)
+                            c["st"] = 2; c["stop"] = ep * (1.0 + dm * s2_l)
+                            if b2 > 0 and not c["b2"]:
+                                c["b2"] = True; bn = notl * b2; c["rem_notl"] -= bn; c["bank"] += bn * s2_t - bn * (ent_f + maker_f)
                         if mf >= s3_t:
                             c["st"] = 3; ts = c["ext"] * (1.0 - dm * 0.0045); fs = ep * (1.0 + dm * s3_l)
                             c["stop"] = max(ts, fs) if side == "LONG" else min(ts, fs)
                     if c is not None:
+                        bar += 1
                         continue
                 if c is None and bar >= cd_until:
                     side = "LONG" if (l_arr[bar] and bar >= lp) else ("SHORT" if (s_arr[bar] and bar >= sp) else None)
@@ -1801,26 +1840,43 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                         ep = d["close"][bar]; dm = 1.0 if side == "LONG" else -1.0
                         lev = 2.4 if ws == 0 else (7.2 if ws >= 2 else 6.4)
                         notl = start_eq * lev
-                        c = {"side": side, "eb": bar, "ep": ep, "ext": ep, "notl": notl, "rem_notl": notl, "qty": 10, "st": 0, "tp1": False, "bank": 0.0, "stop": ep * (1.0 - dm * (stop_pct + 0.0020))}
-            return gp - gl, gp / max(gl, 1.0), wc, lc
+                        c = {"side": side, "eb": bar, "ep": ep, "ext": ep, "notl": notl, "rem_notl": notl, "qty": 10, "st": 0, "b05": False, "b1": False, "b2": False, "bank": 0.0, "stop": ep * (1.0 - dm * (stop_pct + 0.0020))}
+                        bar += 1
+                        continue
+                nxt_min = max(bar + 1, cd_until)
+                pos_i = bisect.bisect_left(s_idxs, nxt_min)
+                if pos_i >= len(s_idxs):
+                    break
+                bar = s_idxs[pos_i]
+            tot = wc + lc
+            wr = (wc / max(tot, 1)) * 100.0
+            return gp - gl, gp / max(gl, 1.0), wr, wc, lc
 
+        per_coin_top: Dict[str, List[Tuple[float, float, float, str, str]]] = {}
         best_coin_map: Dict[str, Tuple[str, str]] = {}
-        coin_summaries = []
+        best_wr_coin_map: Dict[str, Tuple[str, str]] = {}
+        sc_memo: Dict[Tuple[str, str, str], Tuple[float, float, float, int, int]] = {}
         for sym in syms_list:
             if sym not in sig_cache:
                 continue
             cands = []
             for sk in family_labels.keys():
                 for rk in rr_profiles.keys():
-                    net_p, pf, w, l = _sim_single_coin(sym, sk, rk)
+                    res_sc = _sim_single_coin(sym, sk, rk)
+                    sc_memo[(sym, sk, rk)] = res_sc
+                    net_p, pf, wr, w, l = res_sc
                     if (w + l) >= 3:
-                        cands.append((net_p, pf, w, l, sk, rk))
-            cands.sort(reverse=True)
+                        cands.append((net_p, pf, wr, sk, rk))
+            cands.sort(key=lambda x: x[0], reverse=True)
+            per_coin_top[sym] = cands[:3]
             if cands and cands[0][1] >= 1.05:
-                best_coin_map[sym] = (cands[0][4], cands[0][5])
-                coin_summaries.append(f"{sym.split('/')[0]}:{cands[0][4]}")
+                best_coin_map[sym] = (cands[0][3], cands[0][4])
+            cands_wr = [x for x in cands if x[1] >= 1.08 and x[0] > 0]
+            if cands_wr:
+                cands_wr.sort(key=lambda x: x[1] * ((x[2] / 50.0) ** 1.6) * math.sqrt(max(x[0], 1.0)), reverse=True)
+                best_wr_coin_map[sym] = (cands_wr[0][3], cands_wr[0][4])
 
-        # Step 2: Simulate any portfolio map (either Per-Coin Specialist Map or Uniform Model)
+        # Step 2: Simulate any portfolio map (Per-Coin Specialist Map or Uniform Model)
         def _sim_portfolio(model_id: str, model_name: str, coin_assign: Dict[str, Tuple[str, str]]):
             equity = start_eq
             peak = start_eq
@@ -1842,7 +1898,7 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 still = []
                 for c in open_slots:
                     sym = c["sym"]; d = mkt[sym]; side = c["side"]; dm = 1.0 if side == "LONG" else -1.0
-                    stop_pct, min_hb, s05_t, s05_l, s1_t, s1_l, s2_t, s2_l, s3_t, s3_l, s4_tp, _ = rr_profiles[c["rk"]]
+                    stop_pct, min_hb, s05_t, s05_l, b05, s1_t, s1_l, b1, s2_t, s2_l, b2, s3_t, s3_l, s4_tp, _ = rr_profiles[c["rk"]]
                     bo, bh, bl, bc = d["open"][bar], d["high"][bar], d["low"][bar], d["close"][bar]
                     age_bars = bar - c["eb"]
                     ep, notl, qty = c["ep"], c["notl"], c["qty"]
@@ -1859,8 +1915,8 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                             exit_px = c["stop"] if stop_hit else px
                             pe = dm * ((exit_px - ep) / ep) - (slip_s if is_l else slip_p)
                             ex_f = stop_ex_f if is_l else prof_ex_f
-                            rn = c["rem_notl"] if c["tp1"] else notl
-                            pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * pe - rn * (ent_f + ex_f), 2)
+                            rn = c["rem_notl"]
+                            pnl = round(c["bank"] + rn * pe - rn * (ent_f + ex_f), 2)
                             equity = round(equity + pnl, 2)
                             if pnl > 0:
                                 wins_cnt += 1; gross_profit += pnl; ws_map[sym] += 1; pair_cd[sym] = bar + 4
@@ -1879,8 +1935,8 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                             break
 
                         if (side == "LONG" and px >= tpm) or (side == "SHORT" and px <= tpm):
-                            rn = c["rem_notl"] if c["tp1"] else notl
-                            pnl = round((c["bank"] if c["tp1"] else 0.0) + rn * s4_tp - rn * (ent_f + maker_f), 2)
+                            rn = c["rem_notl"]
+                            pnl = round(c["bank"] + rn * s4_tp - rn * (ent_f + maker_f), 2)
                             equity = round(equity + pnl, 2); wins_cnt += 1; gross_profit += pnl
                             ws_map[sym] += 1; pair_cd[sym] = bar + 4
                             if side == "LONG": cl[sym] = 0
@@ -1894,17 +1950,28 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                         mf = dm * ((c["ext"] - ep) / ep)
                         if mf >= s05_t and c["st"] < 0.5:
                             c["st"] = 0.5; c["stop"] = ep * (1.0 + dm * s05_l)
+                            if b05 > 0 and not c["b05_done"]:
+                                hq = max(1, int(round(qty * b05))) if qty >= 2 else 0
+                                if hq > 0 and (qty - hq) > 0:
+                                    bn = notl * (hq / qty); c["rem_notl"] -= bn
+                                    c["bank"] += bn * s05_t - bn * (ent_f + maker_f)
+                                    c["b05_done"] = True
                         if mf >= s1_t and c["st"] < 1:
                             c["st"] = 1; c["stop"] = ep * (1.0 + dm * s1_l)
+                            if b1 > 0 and not c["b1_done"]:
+                                hq = max(1, int(round(qty * b1))) if qty >= 3 else 0
+                                if hq > 0 and c["rem_notl"] > notl * (hq / qty):
+                                    bn = notl * (hq / qty); c["rem_notl"] -= bn
+                                    c["bank"] += bn * s1_t - bn * (ent_f + maker_f)
+                                    c["b1_done"] = True
                         if mf >= s2_t and c["st"] < 2:
-                            c["st"] = 2; c["tp1"] = True
-                            hq = max(1, int(qty * 0.50)) if qty >= 2 else 0
-                            if hq > 0 and (qty - hq) > 0:
-                                hn = notl * (hq / qty); c["rem_notl"] = notl - hn
-                                c["bank"] = hn * s2_t - hn * (ent_f + maker_f)
-                            else:
-                                c["rem_notl"] = notl; c["bank"] = 0.0; c["tp1"] = False
-                            c["stop"] = ep * (1.0 + dm * s2_l)
+                            c["st"] = 2; c["stop"] = ep * (1.0 + dm * s2_l)
+                            if b2 > 0 and not c["b2_done"]:
+                                hq = max(1, int(round(qty * b2))) if qty >= 2 else 0
+                                if hq > 0 and c["rem_notl"] > notl * (hq / qty):
+                                    bn = notl * (hq / qty); c["rem_notl"] -= bn
+                                    c["bank"] += bn * s2_t - bn * (ent_f + maker_f)
+                                    c["b2_done"] = True
                         if mf >= s3_t:
                             c["st"] = 3
                             ts = c["ext"] * (1.0 - dm * 0.0045); fs = ep * (1.0 + dm * s3_l)
@@ -1940,7 +2007,6 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                         _, _, sym, side, ep, rk = cands[0]
                         stop_pct = rr_profiles[rk][0]
                         dm = 1.0 if side == "LONG" else -1.0
-                        # Anti-Martingale Streak Sizing: 2.4x on loss recovery, 6.4x-7.2x on winning streak!
                         lev = 2.4 if ws_map[sym] == 0 else (7.2 if ws_map[sym] >= 2 else 6.4)
                         beq = min(equity, 350000.0 / lev) if compounded else start_eq
                         t_notl = round(beq * lev, 2)
@@ -1952,7 +2018,7 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                         open_slots.append({
                             "sym": sym, "side": side, "eb": bar, "ep": ep, "ext": ep,
                             "notl": ex_notl, "rem_notl": ex_notl, "qty": qty,
-                            "st": 0, "tp1": False, "bank": 0.0,
+                            "st": 0, "b05_done": False, "b1_done": False, "b2_done": False, "bank": 0.0,
                             "stop": ep * (1.0 - dm * (stop_pct + 0.0020)), "rk": rk,
                         })
 
@@ -1980,24 +2046,94 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "recent_trades": list(reversed(sample_trades[-30:])),
             }
 
+        # Rank (sk, rk) pairs by aggregate single-coin performance so we run full portfolio sim on the top 16 uniform models (<2.5s runtime!)
+        combo_scores = {}
+        for sym in syms_list:
+            if sym not in sig_cache:
+                continue
+            for sk in family_labels.keys():
+                for rk in rr_profiles.keys():
+                    net_p, pf, wr, w, l = sc_memo[(sym, sk, rk)]
+                    key = (sk, rk)
+                    prev = combo_scores.get(key, [0.0, 0.0, 0])
+                    combo_scores[key] = [prev[0] + net_p, prev[1] + pf * (w + l), prev[2] + (w + l)]
+        ranked_combos = sorted(combo_scores.keys(), key=lambda k: combo_scores[k][0], reverse=True)[:16]
+
         all_results = []
+        uniform_maps = {}
+        for sk, rk in ranked_combos:
+            r_tuple = rr_profiles[rk]
+            u_assign = {sym: (sk, rk) for sym in syms_list}
+            r = _sim_portfolio(f"{sk}__{rk}", f"{family_labels[sk]} ({r_tuple[14]})", u_assign)
+            if r["trades"] >= 6:
+                all_results.append(r)
+                uniform_maps[f"{sk}__{rk}"] = u_assign
+
+        # Coordinate-Ascent Sovereign Omega Portfolio Optimization:
+        # Starts from the best of {best_coin_map, best_wr_coin_map, #1 uniform model}
+        # and tests each coin's top 2 specialists (+ benching) inside the combined portfolio!
+        seed_maps = []
         if best_coin_map:
-            alloc_lbl = f"V16.0 Sovereign Per-Coin Alpha Allocator ({', '.join(coin_summaries[:3])}...)"
-            all_results.append(_sim_portfolio("V16_PER_COIN_ALLOCATOR", alloc_lbl, best_coin_map))
+            seed_maps.append(dict(best_coin_map))
+        if best_wr_coin_map:
+            seed_maps.append(dict(best_wr_coin_map))
+        if all_results:
+            all_results.sort(key=lambda r: (r["ending_equity_inr"], 1 if "Sovereign Omega" in r["model"] else 0, r["profit_factor"], r["win_rate_pct"]), reverse=True)
+            top_u_id = all_results[0]["model_id"]
+            if top_u_id in uniform_maps:
+                seed_maps.append(dict(uniform_maps[top_u_id]))
 
-        for sk in family_labels.keys():
-            for rk, r_tuple in rr_profiles.items():
-                u_assign = {sym: (sk, rk) for sym in syms_list}
-                r = _sim_portfolio(f"{sk}__{rk}", f"{family_labels[sk]} ({r_tuple[11]})", u_assign)
-                if r["trades"] >= 6:
-                    all_results.append(r)
+        def _port_score(res_dict):
+            eq = res_dict["ending_equity_inr"]
+            pf = res_dict["profit_factor"]
+            wr = res_dict["win_rate_pct"]
+            if res_dict["trades"] < 10 or eq <= start_eq:
+                return eq
+            return eq * (1.0 + 0.15 * max(0.0, (wr - 48.0) / 50.0)) * (1.0 + 0.10 * min(pf, 3.5))
 
-        all_results.sort(key=lambda r: (r["ending_equity_inr"], r["profit_factor"], r["win_rate_pct"]), reverse=True)
+        best_omega_map = None
+        best_omega_res = None
+        for smap in seed_maps:
+            r_try = _sim_portfolio("V18_SOVEREIGN_OMEGA", "TMP", smap)
+            if best_omega_res is None or _port_score(r_try) > _port_score(best_omega_res):
+                best_omega_res = r_try
+                best_omega_map = dict(smap)
+
+        if best_omega_map:
+            for sym in syms_list:
+                opts = [(x[3], x[4]) for x in per_coin_top.get(sym, [])[:2] if x[1] >= 1.05] + [None]
+                for opt in opts:
+                    trial = dict(best_omega_map)
+                    if opt is None:
+                        trial.pop(sym, None)
+                    else:
+                        trial[sym] = opt
+                    if not trial:
+                        continue
+                    r_try = _sim_portfolio("V18_SOVEREIGN_OMEGA", "TMP", trial)
+                    if _port_score(r_try) > _port_score(best_omega_res):
+                        best_omega_res = r_try
+                        best_omega_map = trial
+
+            omega_sum = [f"{s.split('/')[0]}:{best_omega_map[s][0]}" for s in sorted(best_omega_map.keys())]
+            best_omega_res["model"] = f"V18.0 Sovereign Omega Allocator ({', '.join(omega_sum[:3])}...)"
+            all_results.append(best_omega_res)
+
+        if best_wr_coin_map and best_wr_coin_map != best_omega_map:
+            wr_sum = [f"{s.split('/')[0]}:{best_wr_coin_map[s][0]}" for s in sorted(best_wr_coin_map.keys())]
+            r_wr = _sim_portfolio("V18_HIGH_WR_ALLOCATOR", f"V18.0 High-Win-Rate Precision Allocator ({', '.join(wr_sum[:3])}...)", best_wr_coin_map)
+            if r_wr["trades"] >= 6:
+                all_results.append(r_wr)
+
+        all_results.sort(key=lambda r: (r["ending_equity_inr"], 1 if "Sovereign Omega" in r["model"] else 0, r["profit_factor"], r["win_rate_pct"]), reverse=True)
         champion = all_results[0]
         daemon.state["active_strategy_mode"] = champion["model_id"]
-        if champion["model_id"] == "V16_PER_COIN_ALLOCATOR" and best_coin_map:
+        if champion["model_id"] == "V18_SOVEREIGN_OMEGA" and best_omega_map:
             for sym in syms_list:
-                daemon.squeeze_engine.per_coin_family_map[sym] = best_coin_map[sym][0] if sym in best_coin_map else "DISABLED"
+                daemon.squeeze_engine.per_coin_family_map[sym] = best_omega_map[sym][0] if sym in best_omega_map else "DISABLED"
+        elif champion["model_id"] == "V18_HIGH_WR_ALLOCATOR" and best_wr_coin_map:
+            for sym in syms_list:
+                daemon.squeeze_engine.per_coin_family_map[sym] = best_wr_coin_map[sym][0] if sym in best_wr_coin_map else "DISABLED"
         else:
             fam_winner = champion["model_id"].split("__")[0]
             daemon.squeeze_engine.active_family = fam_winner
@@ -2018,9 +2154,9 @@ async def run_instant_backtest(req: BacktestRequest) -> Dict[str, Any]:
                 "max_dd_pct": r["max_dd_pct"],
                 "ending_equity_inr": r["ending_equity_inr"],
                 "roi_pct": r["roi_pct"],
-                "is_champion": (idx == 0),
+                "is_champion": (idx_r == 0),
             }
-            for idx, r in enumerate(top6)
+            for idx_r, r in enumerate(top6)
         ]
 
         return {
