@@ -1,14 +1,18 @@
 """
-APEX-OMEGA OS V15.0 BIG-WAVE AUTO-OPTIMIZER — Multi-Architecture Breakout, Swing & Asymmetric Wave Engine
-Supports 8 orthogonal quantitative signal families dynamically selected by the Real-Candle Tournament Engine:
-1. BRK20 (20-Bar Donchian & Volume Breakout Surge)
-2. BRK48 (48-Bar 4-Hour Macro Range Breakout)
-3. KELTNER_IGNITION (Bollinger-Keltner Squeeze Breakout Ignition)
-4. SUPERTREND (EMA-9/21/50 Impulse Cross + Multi-Hour Momentum Swing)
-5. ASYM_WAVE (V9 Dual-Core Pullback Sniper with Big-Wave 1:4 R:R)
-6. INVERSE_TRAP (Counter-Trap Breakdown/Squeeze Runner)
-7. LIQ_SWEEP (Turtle-Soup 20-Bar Liquidity Sweep & Rejection Reversal)
-8. CAPITULATION (2.0-Sigma Bollinger/VWAP Washout Reversal)
+APEX-OMEGA OS V16.0 SOVEREIGN PER-COIN ALPHA ALLOCATOR & STREAK-SCALED MACRO SWING ENGINE
+Supports 12 orthogonal quantitative signal families and per-coin specialist assignment:
+1. INVERSE_TRAP (Counter-Trap Squeeze Runner)
+2. INVERSE_SNIPER (High-Selectivity Counter-Trap with RVOL & Z-Stretch Filter)
+3. CAPITULATION (2.0-Sigma Bollinger/VWAP Capitulation Sniper)
+4. CAP_ULTRA (2.2-Sigma + RSI-2 <= 10 / >= 90 Extreme Washout Sniper)
+5. BRK48 (48-Bar 4-Hour Macro Range Breakout)
+6. BRK96 (96-Bar 8-Hour Structural Range Breakout)
+7. BRK20 (20-Bar Donchian & Volume Breakout Surge)
+8. SUPERTREND (EMA-9/21/50 Impulse Cross + Multi-Hour Momentum Swing)
+9. ASYM_WAVE (V9 Dual-Core Pullback Sniper with Pure Big-Wave R:R)
+10. INVERSE_BRK (20-Bar False-Breakout Liquidity-Sweep Reversal)
+11. INVERSE_BRK48 (48-Bar 4-Hour False-Breakout Liquidity-Sweep Reversal)
+12. HTF_TREND_FLOW (Multi-Hour EMA9>21>50>200 Trend Continuation)
 """
 import os
 from dataclasses import dataclass, asdict
@@ -65,7 +69,15 @@ class SqueezeEngine:
         self.bb_mult = bb_mult
         self.kc_len = kc_len
         self.kc_mult = kc_mult
-        self.active_family = os.getenv("ACTIVE_SIGNAL_FAMILY", "BRK20").strip().upper()
+        self.active_family = os.getenv("ACTIVE_SIGNAL_FAMILY", "INVERSE_SNIPER").strip().upper()
+        self.per_coin_family_map: Dict[str, str] = {
+            "SOL/USDT:USDT": "INVERSE_SNIPER",
+            "AVAX/USDT:USDT": "INVERSE_TRAP",
+            "DOGE/USDT:USDT": "CAP_ULTRA",
+            "ADA/USDT:USDT": "INVERSE_SNIPER",
+            "LINK/USDT:USDT": "CAPITULATION",
+            "SUI/USDT:USDT": "BRK48",
+        }
 
     @staticmethod
     def _ema(arr: np.ndarray, span: int) -> np.ndarray:
@@ -188,16 +200,23 @@ class SqueezeEngine:
         don_lo20 = float(np.min(low[-21:-1])) if len(low) > 21 else ln
         don_hi48 = float(np.max(high[-49:-1])) if len(high) > 49 else don_hi20
         don_lo48 = float(np.min(low[-49:-1])) if len(low) > 49 else don_lo20
+        don_hi96 = float(np.max(high[-97:-1])) if len(high) > 97 else don_hi48
+        don_lo96 = float(np.min(low[-97:-1])) if len(low) > 97 else don_lo48
 
         is_tier1 = symbol in TIER1_ALPHA_SYMBOLS
-        fam = (family_override or self.active_family or "BRK20").split("__")[0].strip().upper()
+        coin_fam = self.per_coin_family_map.get(symbol, self.active_family)
+        fam = (family_override or coin_fam or "INVERSE_SNIPER").split("__")[0].strip().upper()
+        if fam == "DISABLED":
+            return QuantV9Signal(symbol=symbol, price=live_tick_price, atr_14=float(atr14[-1]), vwap=float(vwap), z_score=z_score, rsi_2=rsi2, rsi_14=rsi14, compression_ratio=comp_ratio, squeeze_on=bool(squeeze_now), squeeze_bars_last_10=int(squeeze_count), ema_trend_slope=ema_slope, rvol=rvol, roc5=roc5, ker=ker, confluence_score=35, setup_type="BENCHED_PAIR", regime="NEUTRAL", signal_valid=False, feed_source=feed_source)
 
-        # Evaluate all families
         brk20_l = is_tier1 and cn > don_hi20 and cn > on and rvol >= 1.12 and ker >= 0.20 and float(ema9[-1]) > float(ema21[-1]) and roc5 >= 0.0018
         brk20_s = is_tier1 and cn < don_lo20 and cn < on and rvol >= 1.12 and ker >= 0.20 and float(ema9[-1]) < float(ema21[-1]) and roc5 <= -0.0018
 
         brk48_l = is_tier1 and cn > don_hi48 and cn > on and rvol >= 1.10 and float(ema21[-1]) > float(ema50[-1]) and roc12 >= 0.0025
         brk48_s = is_tier1 and cn < don_lo48 and cn < on and rvol >= 1.10 and float(ema21[-1]) < float(ema50[-1]) and roc12 <= -0.0025
+
+        brk96_l = is_tier1 and cn > don_hi96 and cn > on and rvol >= 1.15 and float(ema21[-1]) > float(ema50[-1]) and roc12 >= 0.0030
+        brk96_s = is_tier1 and cn < don_lo96 and cn < on and rvol >= 1.15 and float(ema21[-1]) < float(ema50[-1]) and roc12 <= -0.0030
 
         st_l = is_tier1 and len(ema9) > 2 and float(ema9[-2]) <= float(ema21[-2]) and float(ema9[-1]) > float(ema21[-1]) and cn > float(ema50[-1]) and roc12 >= 0.0028 and rvol >= 1.05
         st_s = is_tier1 and len(ema9) > 2 and float(ema9[-2]) >= float(ema21[-2]) and float(ema9[-1]) < float(ema21[-1]) and cn < float(ema50[-1]) and roc12 <= -0.0028 and rvol >= 1.05
@@ -213,29 +232,40 @@ class SqueezeEngine:
         aw_l = (cab and gb and (rsi2 <= 22 or z_score <= -1.0)) or (cbb and bt_)
         aw_s = (cae and rb and (rsi2 >= 78 or z_score >= 1.0)) or (cbe and st_p)
 
-        inv_l = aw_s
-        inv_s = aw_l
+        inv_l, inv_s = aw_s, aw_l
+        invs_l = inv_l and rvol >= 1.05 and z_score >= 0.50
+        invs_s = inv_s and rvol >= 1.05 and z_score <= -0.50
 
         cap_l = is_tier1 and z_score <= -1.85 and rsi2 <= 12.0 and (cn > on or lw >= 0.35) and not_sp
         cap_s = is_tier1 and z_score >= 1.85 and rsi2 >= 88.0 and (cn < on or uw >= 0.35) and not_sp
 
+        capu_l = is_tier1 and z_score <= -2.05 and rsi2 <= 10.0 and (cn > on or lw >= 0.38) and not_sp
+        capu_s = is_tier1 and z_score >= 2.05 and rsi2 >= 90.0 and (cn < on or uw >= 0.38) and not_sp
+
         ib_s = is_tier1 and hn > don_hi20 and cn < don_hi20 and cn < on and rvol >= 1.05
         ib_l = is_tier1 and ln < don_lo20 and cn > don_lo20 and cn > on and rvol >= 1.05
+
+        ib48_s = is_tier1 and hn > don_hi48 and cn < don_hi48 and cn < on and rvol >= 1.08
+        ib48_l = is_tier1 and ln < don_lo48 and cn > don_lo48 and cn > on and rvol >= 1.08
 
         tf_l = is_tier1 and float(ema9[-1]) > float(ema21[-1]) > float(ema50[-1]) > float(ema200[-1]) and cn > float(ema9[-1]) and cn > on and ker >= 0.26 and roc12 >= 0.0035 and rvol >= 1.12
         tf_s = is_tier1 and float(ema9[-1]) < float(ema21[-1]) < float(ema50[-1]) < float(ema200[-1]) and cn < float(ema9[-1]) and cn < on and ker >= 0.26 and roc12 <= -0.0035 and rvol >= 1.12
 
         fam_map = {
-            "BRK20": (brk20_l, brk20_s, "DONCHIAN_20_BREAKOUT"),
+            "INVERSE_TRAP": (inv_l, inv_s, "COUNTER_TRAP_SQUEEZE"),
+            "INVERSE_SNIPER": (invs_l, invs_s, "COUNTER_TRAP_SNIPER"),
+            "CAPITULATION": (cap_l, cap_s, "SIGMA20_CAPITULATION"),
+            "CAP_ULTRA": (capu_l, capu_s, "SIGMA22_ULTRA_CAP"),
             "BRK48": (brk48_l, brk48_s, "MACRO_48_BREAKOUT"),
+            "BRK96": (brk96_l, brk96_s, "STRUCTURAL_96_BREAKOUT"),
+            "BRK20": (brk20_l, brk20_s, "DONCHIAN_20_BREAKOUT"),
             "SUPERTREND": (st_l, st_s, "SUPERTREND_SWING"),
             "ASYM_WAVE": (aw_l, aw_s, "V9_BIG_WAVE_PULLBACK"),
-            "INVERSE_TRAP": (inv_l, inv_s, "COUNTER_TRAP_WAVE"),
-            "CAPITULATION": (cap_l, cap_s, "SIGMA_CAPITULATION"),
-            "INVERSE_BRK": (ib_l, ib_s, "LIQ_SWEEP_REVERSAL"),
+            "INVERSE_BRK": (ib_l, ib_s, "LIQ_SWEEP_20_REVERSAL"),
+            "INVERSE_BRK48": (ib48_l, ib48_s, "LIQ_SWEEP_48_REVERSAL"),
             "HTF_TREND_FLOW": (tf_l, tf_s, "HTF_TREND_CONTINUATION"),
         }
-        go_l, go_s, stype = fam_map.get(fam, (brk20_l or brk48_l, brk20_s or brk48_s, "DONCHIAN_BREAKOUT"))
+        go_l, go_s, stype = fam_map.get(fam, (invs_l or capu_l, invs_s or capu_s, "SOVEREIGN_ALPHA"))
 
         if go_l:
             regime = "LONG_IGNITION"
@@ -249,7 +279,7 @@ class SqueezeEngine:
             signal_valid = True
         else:
             regime = "COILING" if squeeze_now else "NEUTRAL"
-            setup_type = "SCANNING"
+            setup_type = f"SCANNING ({fam})"
             score = int(np.clip(55 + int(rvol * 10) + int(ker * 20), 30, 92))
             signal_valid = False
 
