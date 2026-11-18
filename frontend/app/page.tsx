@@ -112,7 +112,7 @@ const UNIVERSE_PAIRS = [
 ];
 
 // PASTE YOUR RENDER BACKEND URL HERE (OR IN VERCEL ENV NEXT_PUBLIC_API_URL) SO ALL DEVICES SYNC TO 1 SHARED 24/7 SERVER:
-const DEFAULT_RENDER_BACKEND_URL = "https://apex-omega-v9-live.onrender.com";
+const DEFAULT_RENDER_BACKEND_URL = typeof window !== "undefined" ? window.location.origin : "";
 
 function fmtPrice(val: number): number {
   if (!val || isNaN(val)) return 0;
@@ -122,8 +122,8 @@ function fmtPrice(val: number): number {
   return +val.toFixed(2);
 }
 
-const STORAGE_KEY = "apex_omega_real_state_v9_live";
-const RENDER_URL_KEY = "apex_omega_render_url_v9_live";
+const STORAGE_KEY = "apex_omega_real_state_v10_live";
+const RENDER_URL_KEY = "apex_omega_render_url_v10_live";
 
 function calcEma(values: number[], span: number): number[] {
   const alpha = 2.0 / (span + 1.0);
@@ -260,7 +260,7 @@ function evaluateQuantV4(
   const ema9 = calcEma(close, Math.min(9, n));
   const ema200 = calcEma(close, Math.min(200, n));
   const trueAtrPct = atr14[n - 1] / Math.max(close[n - 1], 1e-12);
-  const isTier1 = ["BTC/USDT:USDT", "SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "BNB/USDT:USDT"].includes(pairMeta.symbol);
+  const isTier1 = ["SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT"].includes(pairMeta.symbol);
   const tierBonus = isTier1 ? 2 : 0;
   const minKerGate = isTier1 ? 0.16 : 0.25;
   const volGateOk = trueAtrPct >= 0.0014 && ker >= minKerGate;
@@ -557,9 +557,7 @@ export default function App() {
       } else if (reason === "TIME_DECAY_SCRATCH_WIN") {
         realizedPnl = +Math.max(prevEqVal * 0.0080, rawPnl).toFixed(2);
       } else {
-        // Strict Capped Stop at -1.20% of active equity (~-₹120 on ₹10k) so even a Stage-1 win (+1.50%) > 1 full loss!
-        const maxAllowedLoss = -+(prevEqVal * 0.0120).toFixed(2);
-        realizedPnl = +Math.max(rawPnl, maxAllowedLoss).toFixed(2);
+        realizedPnl = +rawPnl.toFixed(2);
       }
 
       const newEq = +(prevEqVal + realizedPnl).toFixed(2);
@@ -612,7 +610,7 @@ export default function App() {
       const direction = side === "LONG" ? 1.0 : -1.0;
       const entryPrice = fmtPrice(sig.price);
       const atr = Math.max(sig.atr_14, entryPrice * 0.0065);
-      const isTier1 = ["BTC/USDT:USDT", "SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT", "BNB/USDT:USDT"].includes(sig.symbol);
+      const isTier1 = ["SOL/USDT:USDT", "SUI/USDT:USDT", "LINK/USDT:USDT", "DOGE/USDT:USDT", "ADA/USDT:USDT"].includes(sig.symbol);
       const stopDist = isTier1 ? 0.0040 : 0.0048;
 
       const tp1Price = fmtPrice(entryPrice * (1.0 + direction * 0.0068));
@@ -1015,7 +1013,7 @@ export default function App() {
     };
 
     runScan();
-    const timer = setInterval(runScan, 4000);
+    const timer = setInterval(runScan, 1500);
     return () => {
       active = false;
       clearInterval(timer);
@@ -1165,7 +1163,7 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="w-2.5 h-2.5 rounded-full bg-[#97CEB4] animate-pulse" />
             <h1 className="text-sm sm:text-base font-bold tracking-widest text-white">
-              APEX-OMEGA V9 // DUAL-CORE HYPER-COMPOUNDER & 5-STAGE ASYMMETRIC RATCHET
+              APEX-OMEGA V10 LIVE // ZERO-LAG DELTA EXCHANGE INDIA HYPER-COMPOUNDER
             </h1>
             <span className="px-2 py-0.5 text-[10px] bg-[#97CEB4]/15 border border-[#97CEB4]/40 text-[#97CEB4]">
               {feedBadge}
@@ -1678,7 +1676,7 @@ export default function App() {
                   type="text"
                   value={renderUrlInput}
                   onChange={(e) => setRenderUrlInput(e.target.value)}
-                  placeholder="https://apex-omega-v9-live.onrender.com"
+                  placeholder="https://apex-omega-v9.onrender.com"
                   className="flex-1 bg-[#11161B] border border-[#1C242D] px-3 py-2 text-xs text-white focus:outline-none focus:border-[#97CEB4]"
                 />
                 <button
@@ -1703,7 +1701,7 @@ export default function App() {
                 In UptimeRobot, create an <strong>HTTP(s) Monitor</strong> (Interval: 5 minutes) pointing to your Render backend&apos;s <code className="text-[#97CEB4]">/health</code> endpoint so Render never sleeps:
               </p>
               <div className="p-2.5 bg-[#11161B] border border-[#1C242D] text-[#97CEB4] select-all">
-                {renderUrl ? `${renderUrl}/health` : "https://apex-omega-v9-live.onrender.com/health"}
+                {renderUrl ? `${renderUrl}/health` : "https://apex-omega-v9.onrender.com/health"}
               </div>
               <div className="flex items-center justify-between pt-2">
                 <span className="text-[11px] text-slate-400">Need to start a fresh ₹10,000 test run?</span>
