@@ -25,3 +25,7 @@ var/
 .vscode/
 *.swp
 *.swo
+node_modules/
+.next/
+frontend/out/
+frontend/.env.local

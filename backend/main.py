@@ -26,7 +26,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, FileResponse
 
 from core.squeeze_engine import SqueezeEngine, TIER1_ALPHA_SYMBOLS
 from core.kelly_ratchet import KellyRatchet
@@ -46,7 +46,9 @@ UNIVERSE_MAP = [
 ]
 
 STATE_PATH = Path(__file__).parent / "bot_state.json"
-DASHBOARD_HTML_PATH = Path(__file__).parent / "dashboard_v10.html"
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if not os.path.exists(STATIC_DIR):
+    STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 BOOT_TIME = time.time()
 
 
@@ -664,12 +666,17 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             daemon.clients.remove(ws)
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 @app.head("/")
-async def serve_visual_dashboard() -> HTMLResponse:
-    if DASHBOARD_HTML_PATH.exists():
-        return HTMLResponse(content=DASHBOARD_HTML_PATH.read_text(encoding="utf-8"), status_code=200)
-    return HTMLResponse(content="<h1>APEX-OMEGA V9.0 ONE-CLICK LIVE ONLINE</h1>", status_code=200)
+async def serve_visual_dashboard():
+    idx_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(idx_path):
+        return FileResponse(idx_path)
+    return {
+        "status": "ONLINE_24_7",
+        "version": "9.0.0",
+        "service": "APEX-OMEGA OS V9.0 Live Backend",
+    }
 
 
 @app.get("/health")
@@ -841,3 +848,10 @@ async def run_backtest(req: BacktestRequest) -> Dict[str, Any]:
         ],
         "trades": [],
     }
+
+
+if os.path.exists(STATIC_DIR):
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
+

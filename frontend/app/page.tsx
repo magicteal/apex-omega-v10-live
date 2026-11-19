@@ -112,7 +112,7 @@ const UNIVERSE_PAIRS = [
 ];
 
 // PASTE YOUR RENDER BACKEND URL HERE (OR IN VERCEL ENV NEXT_PUBLIC_API_URL) SO ALL DEVICES SYNC TO 1 SHARED 24/7 SERVER:
-const DEFAULT_RENDER_BACKEND_URL = "https://apex-omega-v9-live.onrender.com";
+const DEFAULT_RENDER_BACKEND_URL = "https://apex-omega-v10-live-t5l0.onrender.com";
 
 function fmtPrice(val: number): number {
   if (!val || isNaN(val)) return 0;
