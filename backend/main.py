@@ -86,7 +86,7 @@ def fmt_price(val: float) -> float:
 
 
 class AutonomousDaemonV9:
-    FEE_RATE = 0.0005
+    FEE_RATE = 0.00059  # 0.05% Delta Taker fee + 18% GST
     WIN_COOLDOWN_SEC = 600           # 10m cooldown on same pair after a WIN
     LOSS_COOLDOWN_SEC = 2700         # 45m cooldown on same pair after a LOSS
     DIRECTION_PAUSE_SEC = 2700       # 45m pause on same direction (LONG or SHORT) if 2 consecutive losses occur in that direction
@@ -485,31 +485,20 @@ class AutonomousDaemonV9:
         direction = 1.0 if side == "LONG" else -1.0
         entry_p = float(camp["base_entry_price"])
         notional = float(camp["total_notional_inr"])
-        pct_move = direction * ((exit_price - entry_p) / max(entry_p, 1e-12))
+        st = camp.get("ratchet_stage", 0)
+        is_stop_loss = (st == 0 and reason == "TIGHT_1.20PCT_CAPPED_STOP")
+        slippage = 0.00015 if is_stop_loss else 0.00005
+        pct_move = direction * ((exit_price - entry_p) / max(entry_p, 1e-12)) - slippage
         prev_eq = float(self.state["active_equity"])
         total_fees = notional * self.FEE_RATE * 2.0
         raw_pnl = notional * pct_move - total_fees
 
-        st = camp.get("ratchet_stage", 0)
-        if reason == "STAGE_4_HOME_RUN_JACKPOT_WIN":
-            realized_pnl = round(max(prev_eq * 0.086, raw_pnl), 2)
-        elif st >= 3:
-            realized_pnl = round(max(prev_eq * 0.0565, raw_pnl), 2)
-        elif st == 2:
+        if st >= 2 and camp.get("tp1_hit"):
             runner_notional = notional * 0.50
             runner_pnl = runner_notional * pct_move - (runner_notional * self.FEE_RATE * 2.0)
-            combined = float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl
-            realized_pnl = round(max(prev_eq * 0.0345, combined, raw_pnl), 2)
-        elif st == 1:
-            realized_pnl = round(max(prev_eq * 0.0150, raw_pnl), 2)
-        elif st == 0.5:
-            realized_pnl = round(max(prev_eq * 0.0042, raw_pnl), 2)
-        elif reason == "TIME_DECAY_SCRATCH_WIN":
-            realized_pnl = round(max(prev_eq * 0.0080, raw_pnl), 2)
+            realized_pnl = round(float(camp.get("tp1_banked_pnl_inr", 0.0)) + runner_pnl, 2)
         else:
-            # Strict Capped Stop at -1.20% of active equity (-₹120 on ₹10k) so even a Stage-1 win (+1.50%) > 1 full loss!
-            max_loss = -round(prev_eq * 0.0120, 2)
-            realized_pnl = round(max(raw_pnl, max_loss), 2)
+            realized_pnl = round(raw_pnl, 2)
 
         new_eq = round(prev_eq + realized_pnl, 2)
         roi_pct = round((realized_pnl / max(prev_eq, 1.0)) * 100.0, 2)

@@ -538,30 +538,18 @@ export default function App() {
       const direction = side === "LONG" ? 1.0 : -1.0;
       const totalNotional = camp.total_notional_inr;
       const entryP = camp.base_entry_price;
-      const pctMove = direction * ((exitPrice - entryP) / Math.max(entryP, 1e-12));
+      const isStopLoss = reason === "TIGHT_1.20PCT_CAPPED_STOP";
+      const slippage = isStopLoss ? 0.00015 : 0.00005;
+      const pctMove = direction * ((exitPrice - entryP) / Math.max(entryP, 1e-12)) - slippage;
+      const totalFees = totalNotional * 0.00059 * 2.0;
       const prevEqVal = stateRef.current.activeEquity;
-      const totalFees = totalNotional * 0.0005 * 2.0;
       const rawPnl = totalNotional * pctMove - totalFees;
 
-      let realizedPnl = 0;
-      if (reason === "STAGE_4_HOME_RUN_JACKPOT_WIN") {
-        realizedPnl = +Math.max(prevEqVal * 0.086, rawPnl).toFixed(2);
-      } else if (camp.max_stage_reached === "STAGE_3_SUPER_TRAIL") {
-        realizedPnl = +Math.max(prevEqVal * 0.0565, rawPnl).toFixed(2);
-      } else if (camp.tp1_hit || camp.max_stage_reached === "STAGE_2_50PCT_BANKED") {
+      let realizedPnl = +rawPnl.toFixed(2);
+      if (camp.tp1_hit || camp.max_stage_reached === "STAGE_2_50PCT_BANKED") {
         const runnerNotional = totalNotional * 0.50;
-        const runnerPnl = runnerNotional * pctMove - runnerNotional * 0.0005 * 2.0;
-        realizedPnl = +Math.max(prevEqVal * 0.0345, camp.tp1_banked_pnl_inr + runnerPnl, rawPnl).toFixed(2);
-      } else if (camp.max_stage_reached === "STAGE_1_PROFIT_LOCKED") {
-        realizedPnl = +Math.max(prevEqVal * 0.0150, rawPnl).toFixed(2);
-      } else if (camp.max_stage_reached === "ZERO_LOSS_SHIELD_LOCKED") {
-        realizedPnl = +Math.max(prevEqVal * 0.0042, rawPnl).toFixed(2);
-      } else if (reason === "TIME_DECAY_SCRATCH_WIN") {
-        realizedPnl = +Math.max(prevEqVal * 0.0080, rawPnl).toFixed(2);
-      } else {
-        // Strict Capped Stop at -1.20% of active equity (~-₹120 on ₹10k) so even a Stage-1 win (+1.50%) > 1 full loss!
-        const maxAllowedLoss = -+(prevEqVal * 0.0120).toFixed(2);
-        realizedPnl = +Math.max(rawPnl, maxAllowedLoss).toFixed(2);
+        const runnerPnl = runnerNotional * pctMove - runnerNotional * 0.00059 * 2.0;
+        realizedPnl = +(camp.tp1_banked_pnl_inr + runnerPnl).toFixed(2);
       }
 
       const newEq = +(prevEqVal + realizedPnl).toFixed(2);
@@ -619,7 +607,7 @@ export default function App() {
 
       const tp1Price = fmtPrice(entryPrice * (1.0 + direction * 0.0068));
       const initialStop = fmtPrice(entryPrice * (1.0 - direction * stopDist));
-      const entryFee = +(totalNotional * 0.0005).toFixed(2);
+      const entryFee = +(totalNotional * 0.00059).toFixed(2);
 
       const tranches: TrancheUnit[] = [
         {
@@ -725,7 +713,7 @@ export default function App() {
         updated.effective_stop = updated.breakeven_stop;
         updated.max_stage_reached = "STAGE_2_50PCT_BANKED";
         const halfN = notional * 0.50;
-        updated.tp1_banked_pnl_inr = +(halfN * 0.0068 - halfN * 0.0005 * 2.0).toFixed(2);
+        updated.tp1_banked_pnl_inr = +(halfN * 0.0068 - halfN * 0.00059 * 2.0).toFixed(2);
       }
 
       // Stage 3 (+1.05% move): Locks Stop at Entry + 0.82% (+5.65% win = +₹565+) & trails 0.22% behind peak
@@ -780,11 +768,11 @@ export default function App() {
       const pctMove = direction * ((livePrice - entryP) / Math.max(entryP, 1e-12));
       if (updated.tp1_hit) {
         const runnerN = notional * 0.50;
-        const runnerPnl = +(runnerN * pctMove - runnerN * 0.0005).toFixed(2);
+        const runnerPnl = +(runnerN * pctMove - runnerN * 0.00059).toFixed(2);
         updated.tranches[0].unrealized_pnl_inr = +(updated.tp1_banked_pnl_inr + runnerPnl).toFixed(2);
         updated.total_unrealized_pnl_inr = runnerPnl;
       } else {
-        const pnl = +(notional * pctMove - notional * 0.0005).toFixed(2);
+        const pnl = +(notional * pctMove - notional * 0.00059).toFixed(2);
         updated.tranches[0].unrealized_pnl_inr = pnl;
         updated.total_unrealized_pnl_inr = pnl;
       }
